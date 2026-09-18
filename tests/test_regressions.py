@@ -8,7 +8,44 @@ import unittest
 
 import pandas as pd
 
-from kbo_mlb import crosswalk, scrape_kbo
+from kbo_mlb import crosswalk, names, scrape_kbo
+
+
+class TestKnownPhoneticCollision(unittest.TestCase):
+    """이정후 (Jung-hoo) and 이정호 (Jung-ho) share a loose key. On purpose.
+
+    The loose key folds u onto o, which is what lets "Jung" match "Jeong" and
+    "Hoo" match "Hu" — without it, no Hangul name matches its romanisation.
+    The cost is that two genuinely different players collide, and the KBO
+    really does contain both of these.
+
+    This is safe only because a loose-key match is never auto-accepted
+    without an exact date-of-birth agreement. These tests exist so that
+    nobody "fixes" the collision by tightening the key and silently breaks
+    every Hangul match in the process.
+    """
+
+    def test_collision_is_expected(self):
+        self.assertEqual(names.loose_key("Jung Hoo Lee"),
+                         names.loose_key("Jung Ho Lee"))
+
+    def test_collision_does_not_survive_the_birth_date_gate(self):
+        kbo = pd.DataFrame({
+            "player_register_id": ["lee-junghoo"],
+            "player": ["Jung Hoo Lee"],
+            "date_of_birth": ["1998-08-20"],
+        })
+        mlb = pd.DataFrame({
+            "key_mlbam": [1],
+            "name": ["Jung Ho Lee"],          # different player, same key
+            "date_of_birth": ["1987-04-05"],
+        })
+        result = crosswalk.build(kbo, mlb)
+        tiers = (set(result.matches["match_tier"])
+                 if "match_tier" in result.matches.columns else set())
+        self.assertNotIn("phonetic_dob", tiers)
+        self.assertIn("lee-junghoo",
+                      set(result.review_queue["player_register_id"]))
 
 
 class TestUndefinedRatesBecomeMissing(unittest.TestCase):
