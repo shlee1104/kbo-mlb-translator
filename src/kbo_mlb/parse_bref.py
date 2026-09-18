@@ -89,46 +89,58 @@ def parse_table(soup: BeautifulSoup, table_id: str) -> list[dict[str, str]]:
     if table is None:
         return []
 
-    body = table.find("tbody") or table
+    # League and team totals live in <tfoot>, not <tbody>. Reading only the
+    # body silently drops them, which costs us the independent figure the
+    # cross-source reconciliation check compares against.
+    sections = [s for s in (table.find("tbody"), table.find("tfoot")) if s]
+    if not sections:
+        sections = [table]
+
     rows: list[dict[str, str]] = []
-
-    for tr in body.find_all("tr", recursive=False):
-        # Mid-table repeated headers carry class="thead" (or hold only <th>).
-        classes = tr.get("class") or []
-        if "thead" in classes:
-            continue
-
-        cells = tr.find_all(["th", "td"], recursive=False)
-        if not cells:
-            continue
-
-        row: dict[str, str] = {}
-        for cell in cells:
-            stat = cell.get("data-stat")
-            if not stat:
-                continue
-            row[stat] = _cell_text(cell)
-
-            link = cell.find("a", href=True)
-            if link is not None:
-                href = link["href"]
-                if (m := PLAYER_ID_RE.search(href)):
-                    row["player_register_id"] = m.group(1)
-                elif (m := TEAM_ID_RE.search(href)):
-                    row["team_bref_id"] = m.group(1)
-                elif (m := LEAGUE_ID_RE.search(href)):
-                    row["season_bref_id"] = m.group(1)
-
-        if not row:
-            continue
-        # A row with no identifying label is padding.
-        if not any(row.get(k) for k in ("player", "team_ID", "year_ID")):
-            continue
-
-        row["is_aggregate"] = str(_row_is_aggregate(row))
-        rows.append(row)
+    for section in sections:
+        for tr in section.find_all("tr", recursive=False):
+            row = _parse_row(tr)
+            if row is not None:
+                rows.append(row)
 
     return rows
+
+
+def _parse_row(tr) -> dict[str, str] | None:
+    """Parse one <tr> into a data-stat mapping, or None if it isn't a data row."""
+    # Mid-table repeated headers carry class="thead".
+    if "thead" in (tr.get("class") or []):
+        return None
+
+    cells = tr.find_all(["th", "td"], recursive=False)
+    if not cells:
+        return None
+
+    row: dict[str, str] = {}
+    for cell in cells:
+        stat = cell.get("data-stat")
+        if not stat:
+            continue
+        row[stat] = _cell_text(cell)
+
+        link = cell.find("a", href=True)
+        if link is not None:
+            href = link["href"]
+            if (m := PLAYER_ID_RE.search(href)):
+                row["player_register_id"] = m.group(1)
+            elif (m := TEAM_ID_RE.search(href)):
+                row["team_bref_id"] = m.group(1)
+            elif (m := LEAGUE_ID_RE.search(href)):
+                row["season_bref_id"] = m.group(1)
+
+    if not row:
+        return None
+    # A row with no identifying label is padding.
+    if not any(row.get(k) for k in ("player", "team_ID", "year_ID")):
+        return None
+
+    row["is_aggregate"] = str(_row_is_aggregate(row))
+    return row
 
 
 def parse_season_index(html: str) -> list[dict[str, str]]:

@@ -125,11 +125,22 @@ class TestCrossSourceReconciliation(unittest.TestCase):
         r = validate.check_league_totals_reconcile(players, totals)
         self.assertTrue(r.passed, r.message)
 
-    def test_detects_missing_players(self):
-        # Published league total is much larger than what we scraped, which is
-        # what a dropped team page looks like.
+    def test_undercount_is_a_source_coverage_warning(self):
+        # The source lists fewer players than the total it publishes. Verified
+        # against Baseball-Reference directly, so it is a coverage limit to
+        # surface, not a parsing error to fail on.
         players = batting_frame()
         totals = pd.DataFrame({"season": [2024], "HR": [1438],
+                               "side": ["batting"]})
+        r = validate.check_league_totals_reconcile(players, totals)
+        self.assertFalse(r.passed)
+        self.assertEqual(r.severity, "warning")
+        self.assertLess(r.details["worst_coverage"], 1.0)
+
+    def test_overcount_is_our_bug_and_errors(self):
+        # Scraping MORE than the published total means we double counted.
+        players = batting_frame()
+        totals = pd.DataFrame({"season": [2024], "HR": [10],
                                "side": ["batting"]})
         r = validate.check_league_totals_reconcile(players, totals)
         self.assertFalse(r.passed)

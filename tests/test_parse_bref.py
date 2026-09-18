@@ -47,6 +47,15 @@ class TestParseTeamPage(unittest.TestCase):
         self.assertEqual(len(aggregates), 1)
         self.assertEqual(aggregates[0]["player"], "Team Totals")
 
+    def test_reads_totals_from_tfoot(self):
+        # Regression: totals live in <tfoot>. Reading only <tbody> dropped
+        # them, which left the league-totals table empty and removed the
+        # independent figure the reconciliation check depends on.
+        totals = [r for r in self.parsed["batting"]
+                  if r.get("player") == "Team Totals"]
+        self.assertEqual(len(totals), 1)
+        self.assertEqual(totals[0]["HR"], "143")
+
     def test_extracts_player_register_ids(self):
         ids = {r.get("player_register_id") for r in self.parsed["batting"]}
         self.assertIn("lee---001jun", ids)

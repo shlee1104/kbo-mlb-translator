@@ -119,13 +119,21 @@ def build(
         cols = [c for c in ("key_bbref_minors", "key_mlbam", "key_fangraphs")
                 if c in chadwick.columns]
         if "key_bbref_minors" in cols and "key_mlbam" in cols:
-            bridge = chadwick[cols].dropna(subset=["key_bbref_minors"])
-            bridge = bridge.rename(
-                columns={"key_bbref_minors": "player_register_id"}
-            )
+            # Both join keys must be non-null on both sides. pandas treats
+            # NaN as equal to NaN when merging, so leaving nulls in place
+            # cross-joins every id-less row against every other and produces
+            # a table orders of magnitude too large, made entirely of
+            # spurious links.
+            bridge = (chadwick[cols]
+                      .dropna(subset=["key_bbref_minors", "key_mlbam"])
+                      .rename(columns={"key_bbref_minors": "player_register_id"})
+                      .drop_duplicates(subset=["player_register_id"]))
+            right_ids = right.dropna(subset=["key_mlbam"]).drop_duplicates(
+                subset=["key_mlbam"])
+
             tier1 = left.merge(bridge, on="player_register_id", how="inner")
             tier1 = tier1.merge(
-                right, on="key_mlbam", how="inner", suffixes=("_kbo", "_mlb")
+                right_ids, on="key_mlbam", how="inner", suffixes=("_kbo", "_mlb")
             )
             if not tier1.empty:
                 tier1["match_tier"] = "register_id"

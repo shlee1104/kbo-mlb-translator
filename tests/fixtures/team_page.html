@@ -66,6 +66,10 @@
           <td data-stat="TB">209</td>
           <td data-stat="batting_avg">.300</td>
         </tr>
+      </tbody>
+      <!-- Totals rows live in tfoot, not tbody. A parser that walks only the
+           tbody drops them silently. -->
+      <tfoot>
         <tr>
           <th data-stat="ranker"></th>
           <td data-stat="player">Team Totals</td>
@@ -80,7 +84,7 @@
           <td data-stat="TB">2103</td>
           <td data-stat="batting_avg">.277</td>
         </tr>
-      </tbody>
+      </tfoot>
     </table>
   </div>
 

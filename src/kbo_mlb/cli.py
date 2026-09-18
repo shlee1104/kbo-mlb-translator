@@ -49,12 +49,24 @@ def cmd_scrape(args) -> int:
     return 0
 
 
-def _load(name: str) -> pd.DataFrame:
+def _load(name: str, required: bool = True) -> pd.DataFrame:
+    """Read an interim table.
+
+    An empty file is a real outcome (a table the parser found nothing for),
+    not a crash: return an empty frame so the audit can report the gap as a
+    finding instead of dying on a traceback.
+    """
     path = _path(name)
     if not path.exists():
-        print(f"missing {path}. Run `scrape` first.", file=sys.stderr)
-        sys.exit(2)
-    return pd.read_csv(path, low_memory=False)
+        if required:
+            print(f"missing {path}. Run `scrape` first.", file=sys.stderr)
+            sys.exit(2)
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, low_memory=False)
+    except pd.errors.EmptyDataError:
+        print(f"  note: {path.name} is empty", file=sys.stderr)
+        return pd.DataFrame()
 
 
 def _kbo_player_index(roster: pd.DataFrame) -> pd.DataFrame:
@@ -95,19 +107,19 @@ def cmd_audit(args) -> int:
     league_totals = _load("kbo_league_totals.csv")
 
     stats = None
+    matches = None
     cw = config.PROCESSED_DIR / "crosswalk.csv"
     if cw.exists():
         matches = pd.read_csv(cw, low_memory=False)
+        n_players = roster["player_register_id"].nunique()
         stats = {
-            "matched": len(matches),
-            "kbo_players": roster["player_register_id"].nunique(),
-            "match_rate": round(
-                len(matches) / max(roster["player_register_id"].nunique(), 1), 4
-            ),
+            "matched": matches["player_register_id"].nunique(),
+            "crosswalk_rows": len(matches),
+            "kbo_players": n_players,
         }
 
     results = validate.run_all(batting, pitching, roster, league_totals,
-                               args.start, args.end, stats)
+                               args.start, args.end, stats, matches)
 
     for r in results:
         print(r)

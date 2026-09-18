@@ -171,6 +171,38 @@ completes so you see every problem at once rather than the first one.
 
 ---
 
+## What the first real run found
+
+The audit earned its place immediately. Running the pipeline over 2000–2026
+(6,531 batting seasons, 6,082 pitching seasons, 12,849 roster rows from 270
+cached pages) surfaced three problems that all produced plausible-looking
+output:
+
+1. **A null-key cross join in the crosswalk.** pandas treats NaN as equal to
+   NaN when merging, and most of the player register has no MLB ID. Joining
+   without dropping those nulls first turned 476 genuine links into 200,180
+   rows, almost all fabricated. Caught by the uniqueness check; regression
+   test in `tests/test_regressions.py`.
+2. **Infinite ERAs.** A pitcher who allows earned runs without recording an
+   out has an undefined ERA, which Baseball-Reference prints as `inf`. Left
+   as a float, 28 such rows turn any downstream mean into infinity. These are
+   now stored as missing, because an undefined rate is missing data, not a
+   large number.
+3. **The source is incomplete, and says so itself.** Player rows fall short
+   of the published league total in 8 of 27 seasons, by up to 4.7%. This is
+   not a parsing bug: a team page's own totals row can exceed the sum of the
+   players that same page lists — verified directly on the 2001 Kia Tigers,
+   where the page totals 142 home runs but lists players summing to 122.
+   Baseball-Reference's register omits some marginal players, more often in
+   older seasons.
+
+The third finding changed the design. Because the player lists are
+incomplete but the **published league totals are not**, the model uses the
+published totals as its league baseline rather than summing the players we
+scraped. The reconciliation check now distinguishes the two directions:
+scraping *more* than published is our bug and fails the run; scraping *less*
+is the source's coverage limit and is reported as a warning.
+
 ## Known limitations
 
 Stated up front, because they bound what the output is worth:

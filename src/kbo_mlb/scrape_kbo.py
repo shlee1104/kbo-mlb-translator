@@ -124,10 +124,16 @@ def _finalise(df: pd.DataFrame) -> pd.DataFrame:
 
     for col in _NUMERIC:
         if col in df.columns:
-            df[col] = pd.to_numeric(
+            series = pd.to_numeric(
                 df[col].astype(str).str.replace(",", "", regex=False),
                 errors="coerce",
             )
+            # Baseball-Reference prints "inf" for a rate stat with a zero
+            # denominator - a pitcher who gave up earned runs without
+            # recording an out has an undefined ERA, not an enormous one.
+            # An undefined rate is missing data, so store it as such rather
+            # than letting infinity poison every downstream mean.
+            df[col] = series.replace([float("inf"), float("-inf")], pd.NA)
 
     if "date_of_birth" in df.columns:
         df["date_of_birth"] = pd.to_datetime(

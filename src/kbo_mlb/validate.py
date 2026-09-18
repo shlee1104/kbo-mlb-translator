@@ -230,21 +230,57 @@ def check_league_totals_reconcile(
         return _result("cross_source.league_totals", False, "warning",
                        "no overlapping seasons to reconcile")
 
-    comparison["abs_pct_diff"] = (
-        (comparison["scraped"] - comparison["published"]).abs()
+    comparison["pct_diff"] = (
+        (comparison["scraped"] - comparison["published"])
         / comparison["published"].replace(0, pd.NA)
     )
-    bad = comparison[comparison["abs_pct_diff"] > tolerance_pct]
+    comparison["coverage"] = (
+        comparison["scraped"] / comparison["published"].replace(0, pd.NA)
+    )
+
+    # The direction of the gap tells you whose problem it is.
+    #
+    # scraped > published  -> we counted someone twice, or mis-parsed a row.
+    #                         That is our bug, and it is an error.
+    # scraped < published  -> the source's own player list is shorter than
+    #                         the total it publishes. We verified this against
+    #                         Baseball-Reference's register directly: a team
+    #                         page's tfoot total can exceed the sum of the
+    #                         players that same page lists, so marginal
+    #                         players are simply absent. That is a coverage
+    #                         limit of the source, not a parsing failure, so
+    #                         it is a warning - but it must stay visible,
+    #                         because it bounds what the data can support.
+    over = comparison[comparison["pct_diff"] > tolerance_pct]
+    under = comparison[comparison["pct_diff"] < -tolerance_pct]
+
+    if not over.empty:
+        return _result(
+            "cross_source.league_totals", False, "error",
+            f"{len(over)} seasons where scraped {column} EXCEEDS the "
+            f"published total - likely double counting",
+            over.reset_index(), column=column,
+            worst_coverage=float(comparison["coverage"].min()),
+        )
+
+    if not under.empty:
+        worst = comparison["coverage"].min()
+        return _result(
+            "cross_source.league_totals", False, "warning",
+            f"{len(under)} of {len(comparison)} seasons are short of the "
+            f"published {column} total (source lists fewer players than it "
+            f"counts; worst season captures {worst:.1%}). Use the published "
+            f"league totals as the model baseline, not the player sums.",
+            under.reset_index(), column=column,
+            worst_coverage=float(worst),
+            mean_coverage=float(comparison["coverage"].mean()),
+        )
+
     return _result(
-        "cross_source.league_totals",
-        bad.empty,
-        "error",
-        f"season {column} totals reconcile within "
-        f"{tolerance_pct:.0%}" if bad.empty
-        else f"{len(bad)} seasons where scraped {column} differs from "
-             f"published by more than {tolerance_pct:.0%}",
-        bad.reset_index(),
-        column=column,
+        "cross_source.league_totals", True, "error",
+        f"season {column} totals reconcile within {tolerance_pct:.0%}",
+        None, column=column,
+        mean_coverage=float(comparison["coverage"].mean()),
     )
 
 
@@ -269,18 +305,58 @@ def check_season_coverage(df: pd.DataFrame, expected_start: int,
     )
 
 
-def check_crosswalk_quality(stats: dict,
-                            min_match_rate: float = 0.5) -> CheckResult:
-    rate = stats.get("match_rate", 0.0)
+def check_crosswalk_quality(stats: dict, min_matches: int = 50) -> CheckResult:
+    """Sanity-check the crosswalk size.
+
+    Note on the denominator: a raw "match rate" over every KBO player is not
+    a quality measure, because the large majority of KBO players never played
+    in MLB and *should* not match. A low rate here is expected. What would be
+    alarming is a rate near zero (the join broke) or one near 100% (the join
+    is matching things it shouldn't).
+    """
+    matched = int(stats.get("matched", 0))
+    total = int(stats.get("kbo_players", 0)) or 1
+    rate = matched / total
+
+    if matched < min_matches:
+        return _result(
+            "crosswalk.size", False, "error",
+            f"only {matched} players linked - the join is probably broken",
+            None, **stats)
+
+    if rate > 0.75:
+        return _result(
+            "crosswalk.size", False, "error",
+            f"{rate:.1%} of KBO players linked to MLB records, which is "
+            f"implausibly high - check for a cross join on null keys",
+            None, **stats)
+
     return _result(
-        "crosswalk.match_rate",
-        rate >= min_match_rate,
-        "warning",
-        f"crosswalk matched {rate:.1%} of KBO players"
-        + ("" if rate >= min_match_rate
-           else f" (below the {min_match_rate:.0%} floor)"),
-        None,
-        **stats,
+        "crosswalk.size", True, "info",
+        f"{matched} players linked ({rate:.1%} of all {total} KBO players; "
+        f"most never played MLB, so a low share is expected)",
+        None, **stats)
+
+
+def check_crosswalk_uniqueness(matches: pd.DataFrame) -> CheckResult:
+    """No KBO player may be linked to more than one MLB record.
+
+    This is the check that would have caught the null-key cross join, which
+    silently turned 476 genuine links into 200,180 rows.
+    """
+    if matches.empty or "player_register_id" not in matches.columns:
+        return _result("crosswalk.uniqueness", False, "warning",
+                       "no crosswalk available to check")
+    counts = matches["player_register_id"].value_counts()
+    dupes = counts[counts > 1]
+    return _result(
+        "crosswalk.uniqueness",
+        dupes.empty,
+        "error",
+        "each KBO player links to at most one MLB record" if dupes.empty
+        else f"{len(dupes)} KBO players link to multiple MLB records "
+             f"(worst: {int(dupes.iloc[0])} links)",
+        dupes.reset_index().head(10) if not dupes.empty else None,
     )
 
 
@@ -296,6 +372,7 @@ def run_all(
     start_season: int,
     end_season: int,
     crosswalk_stats: dict | None = None,
+    crosswalk_matches: pd.DataFrame | None = None,
 ) -> list[CheckResult]:
     results: list[CheckResult] = []
 
@@ -332,6 +409,8 @@ def run_all(
 
     if crosswalk_stats:
         results.append(check_crosswalk_quality(crosswalk_stats))
+    if crosswalk_matches is not None:
+        results.append(check_crosswalk_uniqueness(crosswalk_matches))
 
     return results
 
