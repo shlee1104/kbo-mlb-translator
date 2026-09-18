@@ -1,0 +1,23 @@
+# Data is reproducible from the pipeline; don't commit it.
+data/raw/
+data/interim/
+data/processed/
+!data/**/.gitkeep
+
+# Generated reports (keep the directory)
+reports/*.md
+!reports/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
