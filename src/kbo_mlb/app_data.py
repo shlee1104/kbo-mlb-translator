@@ -177,7 +177,22 @@ def project_one(bundle: Bundle, player_register_id: str) -> dict:
     if proj.empty:
         return {}
 
-    proj["informative"] = proj.apply(project.interval_is_informative, axis=1)
+    # A narrow band is not enough on its own. If the model barely responds
+    # to the player's own input (low R-squared), the "projection" is just
+    # league average wearing a tight interval, and presenting that as a
+    # statement about *this* player would be misleading.
+    def _trust(row) -> str:
+        fit = bundle.model.fits.get(row["stat"])
+        narrow = project.interval_is_informative(row)
+        has_signal = bool(fit and fit.r_squared >= 0.10)
+        if narrow and has_signal:
+            return "usable"
+        if not narrow:
+            return "too wide"
+        return "league average regardless"
+
+    proj["trust"] = proj.apply(_trust, axis=1)
+    proj["informative"] = proj["trust"] == "usable"
     proj["label"] = proj["stat"].map(PRETTY).fillna(proj["stat"])
     proj["lower_is_better"] = proj["stat"].isin(LOWER_IS_BETTER)
     order = {s: i for i, s in enumerate(DISPLAY_ORDER)}

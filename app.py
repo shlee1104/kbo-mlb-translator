@@ -127,8 +127,11 @@ with tab_player:
                  "from an average major leaguer.")
     else:
         st.caption(
-            f"{len(good)} of {len(proj)} statistics have a range narrow "
-            f"enough to mean something. The rest are shown greyed out.")
+            f"{len(good)} of {len(proj)} statistics say something specific "
+            f"about **this** player. *Range too wide* means we cannot pin a "
+            f"number down. *League average regardless* means the model "
+            f"barely responds to his KBO numbers, so the projection would "
+            f"look much the same for anyone.")
 
     show = proj.assign(
         Statistic=proj["label"],
@@ -137,8 +140,11 @@ with tab_player:
             "Projected MLB": proj["proj_mlb_rate"].map(lambda v: f"{v:.3f}"),
             "Range (10–90%)": proj.apply(
                 lambda r: f"{r['p10_rate']:.3f} – {r['p90_rate']:.3f}", axis=1),
-            "Trust": proj["informative"].map(
-                lambda b: "✓ usable" if b else "— too wide"),
+            "Trust": proj["trust"].map({
+                "usable": "✓ usable",
+                "too wide": "— range too wide",
+                "league average regardless": "≈ league average regardless",
+            }),
         })[["Statistic", "vs KBO league", "Projected MLB",
             "Range (10–90%)", "Trust"]]
 

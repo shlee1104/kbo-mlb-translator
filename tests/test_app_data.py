@@ -136,3 +136,39 @@ class TestRosterShape(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrustLabels(unittest.TestCase):
+    """A narrow interval is not the same as knowing something."""
+
+    def _bundle(self, r2):
+        model = translate.TranslationModel(side="batting")
+        model.fits = {"avg": translate.StatFit(
+            "avg", intercept=0.0, slope=0.23, age_coef=0.0,
+            direction_coef=0.0, n_pairs=32, n_players=32,
+            residual_sd=0.429, r_squared=r2)}
+        return app_data.Bundle(
+            side="batting", season=2026, kbo=pd.DataFrame(),
+            kbo_raw=pd.DataFrame(), mlb_league=pd.DataFrame(),
+            model=model, draws={}, train_pairs=pd.DataFrame(),
+            validation=pd.DataFrame())
+
+    def _row(self, p10=0.53, p90=1.54):
+        return pd.Series({"stat": "avg", "p10_relative": p10,
+                          "p90_relative": p90})
+
+    def test_narrow_band_without_signal_is_not_usable(self):
+        # Batting average in the live data: band of 2.9x but R-squared 0.09.
+        # The interval is tight because the model predicts roughly league
+        # average for everyone, not because it understands the player.
+        from kbo_mlb import project
+        bundle = self._bundle(r2=0.09)
+        row = self._row()
+        narrow = project.interval_is_informative(row)
+        fit = bundle.model.fits["avg"]
+        self.assertTrue(narrow)
+        self.assertLess(fit.r_squared, 0.10)
+
+    def test_narrow_band_with_signal_is_usable(self):
+        bundle = self._bundle(r2=0.27)
+        self.assertGreaterEqual(bundle.model.fits["avg"].r_squared, 0.10)
