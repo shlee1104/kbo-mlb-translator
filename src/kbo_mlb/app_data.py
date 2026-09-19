@@ -125,12 +125,24 @@ class Bundle:
         out["korean"] = flags[0]
         out["nationality_source"] = flags[1]
         out["past_first_fa"] = out["seasons"] >= self.fa_seasons
-
+        out["earliest_posting_season"] = out["seasons"].map(
+            lambda n: self.season
+            + max(0, project.SEASONS_FOR_POSTING - int(n)))
+        out["overseas_fa_season"] = out["seasons"].map(
+            lambda n: self.season
+            + max(0, project.KBO_OVERSEAS_FA_SEASONS - int(n)))
         if apply_filters:
             if self.korean_only:
                 out = out[out["korean"]]
             if self.pre_fa_only:
                 out = out[~out["past_first_fa"]]
+
+        # Congestion is computed AFTER filtering, on purpose. Only players
+        # who could actually be posted compete for a club's willingness to
+        # let someone go; a foreign import or a veteran already past free
+        # agency is not in that queue. Counting them produced clubs flagged
+        # as congested on the strength of one eligible player.
+        out = project.posting_congestion(out)
 
         return out.reset_index(drop=True)
 

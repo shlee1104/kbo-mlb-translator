@@ -80,9 +80,11 @@ pre_fa_only = st.sidebar.checkbox(
 fa_seasons = st.sidebar.slider(
     "Seasons to domestic free agency", 6, 10,
     app_data.project.KBO_DOMESTIC_FA_SEASONS,
-    help="Commonly cited as 8 for high-school entrants and 9 for college "
-         "entrants. Adjustable because it is not verified to the same "
-         "standard as the posting and bonus-pool rules.")
+    help="Per the Korean rules: 9 credited seasons for high-school "
+         "entrants, 7 or 8 for four-year-college entrants. An overseas "
+         "move needs 8 either way. Education is not in this data, so 9 "
+         "(the common case for KBO stars) is the default and this is a "
+         "slider rather than a constant.")
 
 try:
     bundle = get_bundle(side, int(season), int(min_pt), korean_only,
@@ -130,9 +132,26 @@ with tab_player:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Age", f"{info['age']:.0f}")
     c2.metric("KBO seasons", info["seasons"])
-    c3.metric("Earliest posting", avail["earliest_posting_season"])
-    c4.metric("Domestic FA", avail["domestic_fa_season"])
-    c5.metric("Age when posted", f"{avail['age_at_earliest_posting']:.0f}")
+    c3.metric("Postable", avail["earliest_posting_season"],
+              help="7 credited seasons, with the club's consent.")
+    c4.metric("Free to leave", avail["overseas_fa_season"],
+              help="8 credited seasons: an overseas move no longer needs "
+                   "the club's consent.")
+    c5.metric("Domestic FA", avail["domestic_fa_season"],
+              help="When he can re-sign in Korea instead.")
+
+    # Club consent is rarely refused, so the row on the board matters more
+    # than the rule: a club losing two players at once holds one back.
+    row = roster[roster["player_register_id"] == labels[choice]]
+    if not row.empty and bool(row.iloc[0].get("posting_likely_delayed")):
+        n = int(row.iloc[0]["club_eligible_that_year"])
+        st.warning(
+            f"**Posting may slip a year.** {n} {row.iloc[0]['team_name']} "
+            f"players reach posting eligibility in "
+            f"{avail['earliest_posting_season']}. Clubs rarely refuse "
+            f"consent, but they do stagger departures rather than lose "
+            f"several at once — Kiwoom held Kim Hye-seong back a year "
+            f"rather than post him alongside Lee Jung-hoo.")
 
     # Postable at 7 seasons, a domestic free agent at about 8. The gap
     # between those is the whole opportunity.
@@ -235,16 +254,18 @@ with tab_browse:
         & roster["team_name"].isin(picked)]
 
     view = view.assign(**{
-        "Postable": view["seasons"].map(
-            lambda s: bundle.season
-            + max(0, app_data.project.SEASONS_FOR_POSTING - s)),
+        "Postable": view["earliest_posting_season"],
+        "Free": view["overseas_fa_season"],
         "FA": view["seasons"].map(
             lambda s: bundle.season + max(0, bundle.fa_seasons - s)),
+        "Club queue": view["posting_likely_delayed"].map(
+            lambda b: "⚠ may slip" if b else ""),
         "Nationality from": view["nationality_source"],
     })
 
     cols = [c for c in ("player", "team_name", "age", "seasons", "Postable",
-                        "FA", "Nationality from", "PA", "batters_faced")
+                        "Free", "FA", "Club queue", "Nationality from",
+                        "PA", "batters_faced")
             if c in view.columns]
     st.dataframe(view[cols], width='stretch', hide_index=True)
     st.caption(f"{len(view)} players")
@@ -301,14 +322,34 @@ translation, and including both directions helps but does not remove it.
 
 ### The signing rules used here
 
-A KBO player needs roughly **seven seasons** before his club can post him.
-Separately, a foreign professional is exempt from MLB's international bonus
-pools only at **25 or older with six or more professional seasons** — below
-that he is limited to a bonus slot rather than a market contract.
+**Getting out of Korea.** A player is postable after **7 credited
+seasons**, with his club's consent, and can move overseas without consent
+after **8**. First domestic free agency is **9 seasons** for high-school
+entrants and 7 or 8 for four-year-college entrants.
 
-Both are approximations and should be verified. The Major League labour
+**A credited season is not a calendar year.** It requires **145+ days
+registered on the first team**, and days short of that carry over and
+combine across years until they total 145. Registered-day counts are not
+published anywhere this pipeline reads, so the seasons counted here are
+calendar seasons in which a player appeared. **Every date on this page is
+an estimate, not a schedule.**
+
+**Consent is rarely the obstacle; the club's queue is.** Clubs almost
+always grant a posting request, but they stagger departures rather than
+lose several players at once. Kiwoom held Kim Hye-seong back a year rather
+than post him alongside Lee Jung-hoo. Players whose club faces that
+situation are flagged.
+
+**The bonus pool.** A foreign professional is exempt from MLB's
+international bonus pools only at **25 or older with six or more
+professional seasons** — below that he is limited to a bonus slot rather
+than a market contract.
+
+Sources disagree on some of this: MLB's glossary puts international free
+agency at nine years of professional experience, while the Korean rules
+give eight seasons for an overseas move. And the Major League labour
 agreement expires **1 December 2026** with an international draft under
-negotiation, which would change all of it.
+negotiation, which would rewrite all of it.
 """)
 
     if not bundle.validation.empty:

@@ -46,18 +46,43 @@ SEASONS_FOR_INTERNATIONAL_FA = 9
 POOL_EXEMPT_MIN_AGE = 25
 POOL_EXEMPT_MIN_PRO_SEASONS = 6
 
-# Domestic KBO free agency - when a player can re-sign at home for real
-# money. NOT verified to the same standard as the numbers above, which is
-# why it is a parameter rather than a constant buried in a formula. The
-# commonly cited thresholds are 8 seasons for high-school entrants and 9
-# for college entrants; 8 is the conservative default.
+# KBO free agency, per the Korean-language rules (Namu Wiki, translated).
+# The structure is more intricate than a season count:
 #
-# This is the one that actually bounds the market. A KBO player becomes
-# postable at 7 seasons and a domestic free agent at about 8, so the window
-# in which an MLB club can realistically acquire him is roughly one to two
-# seasons wide. After he signs that first domestic deal he is typically 30
-# or older and locked up, and MLB interest drops away.
-KBO_DOMESTIC_FA_SEASONS = 8
+#   A credited season requires 145+ days registered on the first team
+#   (1군). Days short of 145 in one year CARRY OVER and combine with other
+#   years until they total 145. National-team call-ups are credited back.
+#
+#   First domestic FA:  9 seasons for high-school entrants,
+#                       7 or 8 for four-year-college entrants.
+#   Moving OVERSEAS:    8 seasons, high-school and college alike.
+#
+# Two consequences worth being explicit about.
+#
+# First, the seasons counted in this module are calendar seasons in which a
+# player appeared, NOT 145-day credited seasons, because registered-day
+# counts are not published in any source this pipeline reads. A player who
+# appeared briefly gets a full season here and none from the KBO. Every
+# date this module produces is therefore an ESTIMATE, not a schedule.
+#
+# Second, sources disagree. MLB's own glossary describes international free
+# agency as requiring nine years of professional experience, while the
+# Korean rules give eight seasons for an overseas move, and Namu Wiki
+# hedges the college number as "7 (or 8)". Nobody should treat any of these
+# as settled.
+KBO_OVERSEAS_FA_SEASONS = 8      # free to leave without club consent
+KBO_DOMESTIC_FA_SEASONS = 9      # high-school entrants; the common case
+
+# For a high-school entrant the sequence runs:
+#   season 7  postable, but only with the club's consent
+#   season 8  overseas free agent - can leave on his own
+#   season 9  domestic free agent - can take a Korean payday instead
+#
+# In practice club consent is rarely the binding constraint. It is refused
+# when a club would lose several eligible players at once: Kiwoom held Kim
+# Hye-seong back a year rather than post him alongside Lee Jung-hoo. That
+# is roster congestion, not reluctance, and `posting_congestion` below
+# flags it rather than modelling consent as a general barrier.
 
 # Backwards-compatible alias.
 SEASONS_FOR_FREE_AGENCY = SEASONS_FOR_INTERNATIONAL_FA
@@ -84,7 +109,9 @@ def availability(
     # How much longer until the pool no longer applies, if it does now?
     years_to_exempt = max(0, POOL_EXEMPT_MIN_AGE - age_then)
 
-    # When does he reach domestic free agency, and has he passed it?
+    # Two different freedoms, at two different thresholds.
+    overseas_season = current_season + max(
+        0, KBO_OVERSEAS_FA_SEASONS - seasons_played)
     fa_season = current_season + max(0, fa_seasons - seasons_played)
     past_fa = seasons_played >= fa_seasons
 
@@ -104,11 +131,46 @@ def availability(
         "note": ("market contract" if exempt
                  else "pool-capped: bonus slot only"),
         "domestic_fa_season": fa_season,
+        "overseas_fa_season": overseas_season,
+        "needs_club_consent_until": overseas_season,
         "past_first_fa": past_fa,
         "acquisition_window_seasons": window,
         "window": (f"{window_start}-{window_end}"
                    if window > 0 else "closed"),
     }
+
+
+def posting_congestion(
+    roster: pd.DataFrame,
+    season_col: str = "earliest_posting_season",
+    team_col: str = "team_name",
+) -> pd.DataFrame:
+    """Flag clubs that would lose several players to posting in one year.
+
+    Club consent is almost always granted, so on paper every player who
+    reaches seven seasons is available. The exception is a club with more
+    than one eligible player in the same window: rather than lose both,
+    it holds one back. Kiwoom posted Lee Jung-hoo after 2023 and Kim
+    Hye-seong after 2024 - the same club, staggered by a year, because both
+    became eligible together.
+
+    That makes congestion a better predictor of *when* a player actually
+    becomes available than the rule itself. Adds two columns:
+
+      club_eligible_that_year  how many of the club's players reach posting
+                               eligibility in the same season
+      posting_likely_delayed   True when that count is above one
+    """
+    out = roster.copy()
+    if season_col not in out.columns or team_col not in out.columns:
+        out["club_eligible_that_year"] = 1
+        out["posting_likely_delayed"] = False
+        return out
+
+    counts = out.groupby([team_col, season_col])[season_col].transform("size")
+    out["club_eligible_that_year"] = counts.astype(int)
+    out["posting_likely_delayed"] = out["club_eligible_that_year"] > 1
+    return out
 
 
 def project_player(

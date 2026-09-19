@@ -262,19 +262,74 @@ class TestSigningTargetFilters(unittest.TestCase):
         self.assertIn("kr_vet", set(got["player_register_id"]))
 
 
+class TestPostingCongestion(unittest.TestCase):
+    """Club consent is rarely refused - unless the club would lose two."""
+
+    def test_two_eligible_at_one_club_flags_a_likely_delay(self):
+        # Kiwoom had Lee Jung-hoo and Kim Hye-seong eligible together and
+        # staggered them a year apart rather than lose both. That is the
+        # real reason a posting slips, and it is not in any rulebook.
+        from kbo_mlb import project
+        roster = pd.DataFrame({
+            "player": ["Lee Jung-hoo", "Kim Hye-seong", "Someone Else"],
+            "team_name": ["Kiwoom Heroes", "Kiwoom Heroes", "LG Twins"],
+            "earliest_posting_season": [2024, 2024, 2024],
+        })
+        out = project.posting_congestion(roster)
+        kiwoom = out[out["team_name"] == "Kiwoom Heroes"]
+        self.assertTrue(kiwoom["posting_likely_delayed"].all())
+        self.assertEqual(set(kiwoom["club_eligible_that_year"]), {2})
+
+    def test_a_lone_eligible_player_is_not_flagged(self):
+        from kbo_mlb import project
+        roster = pd.DataFrame({
+            "player": ["Someone Else"], "team_name": ["LG Twins"],
+            "earliest_posting_season": [2024],
+        })
+        out = project.posting_congestion(roster)
+        self.assertFalse(out.iloc[0]["posting_likely_delayed"])
+
+    def test_same_club_different_years_is_not_congestion(self):
+        from kbo_mlb import project
+        roster = pd.DataFrame({
+            "player": ["A", "B"],
+            "team_name": ["Kiwoom Heroes", "Kiwoom Heroes"],
+            "earliest_posting_season": [2024, 2025],
+        })
+        out = project.posting_congestion(roster)
+        self.assertFalse(out["posting_likely_delayed"].any())
+
+    def test_missing_columns_do_not_raise(self):
+        from kbo_mlb import project
+        out = project.posting_congestion(pd.DataFrame({"player": ["A"]}))
+        self.assertIn("posting_likely_delayed", out.columns)
+
+
 class TestAcquisitionWindow(unittest.TestCase):
-    def test_window_is_the_gap_between_posting_and_free_agency(self):
+    def test_window_spans_posting_through_domestic_free_agency(self):
+        # Kim Do-young: 5 credited seasons after 2026. Postable at 7 (2028),
+        # an overseas free agent at 8 (2029), a domestic free agent at 9
+        # (2030). The realistic window is 2028-2029.
         from kbo_mlb import project
         a = project.availability(seasons_played=5, age_now=22,
                                  current_season=2026)
         self.assertEqual(a["earliest_posting_season"], 2028)
-        self.assertEqual(a["domestic_fa_season"], 2029)
-        self.assertEqual(a["acquisition_window_seasons"], 1)
+        self.assertEqual(a["overseas_fa_season"], 2029)
+        self.assertEqual(a["domestic_fa_season"], 2030)
+        self.assertEqual(a["acquisition_window_seasons"], 2)
         self.assertFalse(a["past_first_fa"])
+
+    def test_club_consent_only_matters_before_overseas_free_agency(self):
+        from kbo_mlb import project
+        a = project.availability(seasons_played=7, age_now=26,
+                                 current_season=2026)
+        # Postable now, but needs consent until he reaches 8 seasons.
+        self.assertEqual(a["earliest_posting_season"], 2026)
+        self.assertEqual(a["needs_club_consent_until"], 2027)
 
     def test_window_is_closed_once_free_agency_has_passed(self):
         from kbo_mlb import project
-        a = project.availability(seasons_played=9, age_now=31,
+        a = project.availability(seasons_played=10, age_now=32,
                                  current_season=2026)
         self.assertTrue(a["past_first_fa"])
         self.assertEqual(a["acquisition_window_seasons"], 0)
