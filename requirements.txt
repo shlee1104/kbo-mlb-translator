@@ -1,19 +1,19 @@
-# Core pipeline (Phase 1: audit, validation, crosswalk)
+# Runtime dependencies for both the pipeline and the app.
+#
+# Kept deliberately small: Streamlit Community Cloud installs this on every
+# deploy, and each unused package is another chance for the build to fail.
+# The model is fitted with numpy's least squares directly, so scikit-learn
+# and statsmodels are not needed. pybaseball is not needed either - MLB
+# stats come from MLB's own Stats API (see mlb_statsapi.py), because
+# pybaseball's FanGraphs path now answers HTTP 403.
+
 pandas>=2.0
+numpy>=1.24
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=4.9
 tabulate>=0.9          # pandas .to_markdown() in the audit report
-
-# MLB season stats (optional - the pipeline degrades gracefully without it)
-pybaseball>=2.2
-
-# Model and app (Days 4-6)
-numpy>=1.24
-scikit-learn>=1.3
-statsmodels>=0.14
 streamlit>=1.30
-altair>=5.0
 
-# Development
-pytest>=7.4
+# Development only (not required to run the app):
+#   pytest>=7.4

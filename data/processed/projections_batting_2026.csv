@@ -1,0 +1,17 @@
+player,stat,kbo_relative,proj_mlb_relative,p10_relative,p90_relative,mlb_league_rate,proj_mlb_rate,p10_rate,p90_rate,informative,seasons_played,seasons_until_posting_eligible,earliest_posting_season,age_at_earliest_posting,bonus_pool_exempt_if_posted_then,extra_years_for_pool_exemption,note
+Hyun Min Ahn,k_pct,0.894,1.164,0.515,2.702,0.2208,0.2571,0.1136,0.5967,False,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,bb_pct,1.747,1.1,0.251,5.018,0.0891,0.098,0.0224,0.4472,False,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,hr_pct,1.937,1.353,0.096,16.489,0.0303,0.041,0.0029,0.5002,False,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,avg,1.215,0.917,0.539,1.55,0.2441,0.2238,0.1316,0.3782,True,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,obp,1.319,0.927,0.615,1.362,0.3188,0.2954,0.1961,0.4343,True,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,slg,1.398,0.984,0.502,1.885,0.4007,0.3943,0.201,0.7552,False,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,iso,1.77,1.195,0.366,4.083,0.1567,0.1872,0.0573,0.6397,False,3,4,2030,26.0,True,0.0,market contract
+Hyun Min Ahn,babip,1.159,0.967,0.586,1.607,0.2895,0.28,0.1697,0.4653,True,3,4,2030,26.0,True,0.0,market contract
+Do Yeong Kim,k_pct,0.904,1.171,0.518,2.717,0.2208,0.2585,0.1144,0.5999,False,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,bb_pct,1.262,0.896,0.202,4.033,0.0891,0.0799,0.018,0.3594,False,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,hr_pct,2.342,1.487,0.102,18.774,0.0303,0.0451,0.0031,0.5695,False,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,avg,1.195,0.913,0.536,1.54,0.2441,0.2228,0.1309,0.3758,True,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,obp,1.171,0.895,0.597,1.312,0.3188,0.2852,0.1905,0.4182,True,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,slg,1.474,0.994,0.508,1.898,0.4007,0.3982,0.2037,0.7607,False,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,iso,2.028,1.267,0.385,4.33,0.1567,0.1984,0.0604,0.6783,False,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only
+Do Yeong Kim,babip,1.084,0.936,0.567,1.553,0.2895,0.2708,0.1642,0.4495,True,5,2,2028,24.0,False,1.0,pool-capped: bonus slot only

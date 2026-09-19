@@ -1,12 +1,12 @@
-# Data is reproducible from the pipeline; don't commit it.
+# Raw source payloads are large and fully reproducible from the pipeline.
+# 151MB of cached HTML and the 54MB Chadwick register stay out of the repo.
 data/raw/
-data/interim/
-data/processed/
-!data/**/.gitkeep
 
-# Generated reports (keep the directory)
-reports/*.md
-!reports/.gitkeep
+# The interim and processed tables ARE committed (about 7MB). The deployed
+# app needs them: Streamlit Community Cloud clones this repo and runs
+# app.py, with no way to run a 20-minute crawl first.
+!data/interim/
+!data/processed/
 
 # Python
 __pycache__/
