@@ -83,12 +83,17 @@ def make_fetcher(offline: bool = False) -> CachedFetcher:
     API built to be queried. We still rate-limit and still cache every
     response, just at a pace suited to an API rather than a web page.
     """
-    return CachedFetcher(
+    fetcher = CachedFetcher(
         cache_dir=config.RAW_DIR / "statsapi_cache",
         delay_seconds=0.15,
         max_per_minute=240,
         offline=offline,
     )
+    # The shared fetcher was built for scraping HTML and asks for
+    # text/html. This endpoint serves JSON and correctly answers 406 Not
+    # Acceptable to that, so the header has to be replaced, not appended to.
+    fetcher.session.headers["Accept"] = "application/json"
+    return fetcher
 
 
 def _get_json(fetcher: CachedFetcher, url: str) -> dict:
@@ -141,13 +146,26 @@ def fetch_player_seasons(
     rows: list[dict] = []
 
     ids = [int(i) for i in pd.Series(mlbam_ids).dropna().unique()]
+    failures = 0
     for n, pid in enumerate(ids, 1):
         url = (f"{API}/people/{pid}/stats"
                f"?stats=yearByYear&group={group}")
         try:
             payload = _get_json(fetcher, url)
         except RuntimeError as exc:
-            log.warning("player %s failed: %s", pid, exc)
+            failures += 1
+            # Log the first few in full, then stop repeating the same thing.
+            if failures <= 3:
+                log.warning("player %s failed: %s", pid, exc)
+            # A handful of failures is normal (a player with no MLB record
+            # on this side of the ball). Everything failing is a broken
+            # request shape, and continuing would write a plausible-looking
+            # empty file instead of telling anyone.
+            if failures >= 10 and failures == n:
+                raise RuntimeError(
+                    f"every one of the first {n} requests failed for "
+                    f"{side}. Last error: {exc}\nURL shape: {url}"
+                ) from exc
             continue
 
         for block in payload.get("stats", []):
@@ -160,6 +178,9 @@ def fetch_player_seasons(
 
         if n % 50 == 0:
             log.info("  %d/%d players", n, len(ids))
+
+    if failures:
+        log.info("%s: %d/%d players returned nothing", side, failures, len(ids))
 
     df = pd.DataFrame(rows)
     if df.empty:

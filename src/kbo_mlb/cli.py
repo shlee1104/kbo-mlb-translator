@@ -164,6 +164,10 @@ def cmd_mlb(args) -> int:
 
         for side in ("batting", "pitching"):
             df = mlb_statsapi.fetch_player_seasons(ids, side, fetcher)
+            if df.empty:
+                print(f"\nERROR: no MLB {side} data came back at all. "
+                      f"Nothing was written.", file=sys.stderr)
+                return 1
             name = f"mlb_{side}{suffix}.csv"
             df.to_csv(_path(name), index=False)
             print(f"  {side}: {len(df):>6} player-seasons -> {_path(name)}")
@@ -171,6 +175,12 @@ def cmd_mlb(args) -> int:
         totals = pd.concat(
             [mlb_statsapi.fetch_league_totals(seasons, s, fetcher)
              for s in ("batting", "pitching")], ignore_index=True)
+        expected = len(seasons) * 2
+        if len(totals) < expected * 0.8:
+            print(f"\nERROR: only {len(totals)} of ~{expected} league-total "
+                  f"rows came back. Without league context every rate would "
+                  f"be wrong, so nothing was written.", file=sys.stderr)
+            return 1
         totals.to_csv(_path(f"mlb_league_totals{suffix}.csv"), index=False)
         print(f"  league totals: {len(totals)} rows")
         print(f"\ncache hits: {fetcher.stats['cache_hits']}, "
