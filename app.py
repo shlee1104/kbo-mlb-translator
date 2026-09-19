@@ -4,6 +4,11 @@ Run it with:
 
     PYTHONPATH=src streamlit run app.py
 
+Note while developing: Streamlit's hot reload re-runs THIS file but does
+not re-import modules already in sys.modules. After changing anything
+under src/kbo_mlb/, stop the server and start it again, or you will see a
+stale module raise AttributeError for code that is plainly on disk.
+
 Design intent: a scout should be able to answer two questions without
 reading any code, and should not be able to come away with a false
 impression of how much we know.
@@ -194,7 +199,7 @@ with tab_player:
         })[["Statistic", "vs KBO league", "Projected MLB",
             "Range (10–90%)", "Trust"]]
 
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.dataframe(show, width='stretch', hide_index=True)
 
     with st.expander("KBO record"):
         hist = info["history"]
@@ -202,7 +207,7 @@ with tab_player:
                             "PA", "batters_faced", "avg", "obp", "slg",
                             "k_pct", "bb_pct", "era")
                 if c in hist.columns]
-        st.dataframe(hist[cols].round(3), use_container_width=True,
+        st.dataframe(hist[cols].round(3), width='stretch',
                      hide_index=True)
 
 
@@ -241,7 +246,7 @@ with tab_browse:
     cols = [c for c in ("player", "team_name", "age", "seasons", "Postable",
                         "FA", "Nationality from", "PA", "batters_faced")
             if c in view.columns]
-    st.dataframe(view[cols], use_container_width=True, hide_index=True)
+    st.dataframe(view[cols], width='stretch', hide_index=True)
     st.caption(f"{len(view)} players")
 
 
@@ -268,7 +273,7 @@ separately, and most of them failed.
         st.dataframe(
             quality[["statistic", "how much carries over", "explained",
                      "typical range", "pairs", "verdict"]],
-            use_container_width=True, hide_index=True)
+            width='stretch', hide_index=True)
         st.caption(
             "*How much carries over*: 1.0 would mean a player keeps his edge "
             "over his league intact; 0 means the new league erases it. "
@@ -315,4 +320,4 @@ negotiation, which would change all of it.
             cols = [c for c in ("player", "stat", "kbo_season", "mlb_season",
                                 "predicted", "actual", "p10", "p90",
                                 "in_interval") if c in v.columns]
-            st.dataframe(v[cols], use_container_width=True, hide_index=True)
+            st.dataframe(v[cols], width='stretch', hide_index=True)
