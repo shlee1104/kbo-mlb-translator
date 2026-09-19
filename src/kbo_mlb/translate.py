@@ -341,6 +341,45 @@ def bootstrap_coefficients(
     return BootstrapDraws(stat, np.vstack(betas), np.array(sds))
 
 
+def inversion_diagnostic(pairs: pd.DataFrame, stat: str) -> dict:
+    """Show why a fitted slope must not be algebraically inverted.
+
+    For a simple regression, slope(y~x) * slope(x~y) = R-squared. So when
+    the fit is weak, the two directions are wildly inconsistent, and
+    flipping 1/slope overshoots by roughly 1/R-squared.
+
+    Concretely: if predicting MLB from KBO gives a slope of 0.1 with an
+    R-squared of 0.1, then the honest reverse slope is 1.0, not 10.
+
+    The lesson is that the direction you intend to *predict* is the
+    direction you must *fit*. This function exists so that the repo can
+    demonstrate that rather than assert it.
+    """
+    kcol, mcol = f"kbo_rel_{stat}", f"mlb_rel_{stat}"
+    df = pairs[[kcol, mcol]].apply(pd.to_numeric, errors="coerce").dropna()
+    df = df[(df[kcol] > 0) & (df[mcol] > 0)]
+    if len(df) < MIN_PAIRS_TO_FIT:
+        return {}
+
+    x = np.log(df[kcol].to_numpy())
+    y = np.log(df[mcol].to_numpy())
+    r = float(np.corrcoef(x, y)[0, 1])
+
+    b_mlb_on_kbo = float(np.polyfit(x, y, 1)[0])   # predict MLB from KBO
+    b_kbo_on_mlb = float(np.polyfit(y, x, 1)[0])   # predict KBO from MLB
+
+    return {
+        "stat": stat,
+        "n": len(df),
+        "r_squared": round(r**2, 3),
+        "slope_mlb_on_kbo": round(b_mlb_on_kbo, 3),
+        "slope_kbo_on_mlb": round(b_kbo_on_mlb, 3),
+        "naive_inverted_slope": (round(1.0 / b_kbo_on_mlb, 3)
+                                 if abs(b_kbo_on_mlb) > 1e-9 else float("inf")),
+        "slope_product_equals_r2": round(b_mlb_on_kbo * b_kbo_on_mlb, 3),
+    }
+
+
 def _row(kbo_relative: float, age: float, direction: str) -> np.ndarray:
     return np.array([
         1.0,

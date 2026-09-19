@@ -275,7 +275,12 @@ def cmd_model(args) -> int:
     print(pairs["cohort"].value_counts().to_string())
     print(f"\ndirections:\n{pairs['direction'].value_counts().to_string()}")
 
+    direction = (None if args.train_direction == "both"
+                 else args.train_direction)
     train = pairs[pairs["cohort"] != cohorts.POSTED]
+    if direction:
+        train = train[train["direction"] == direction]
+        print(f"\ntraining restricted to {direction}: {len(train)} pairs")
     model = translate.fit(train, side)
     if not model.fits:
         print("not enough usable pairs to fit any statistic", file=sys.stderr)
@@ -284,7 +289,16 @@ def cmd_model(args) -> int:
     print(f"\nfitted on {len(train)} pairs (posted players held out):")
     print(model.summary().to_string(index=False))
 
-    results = evaluate.holdout_validate(pairs, side, n_boot=args.boot)
+    diag = [translate.inversion_diagnostic(train, st) for st in model.fits]
+    diag = pd.DataFrame([d for d in diag if d])
+    if not diag.empty:
+        print("\nwhy the slope is not inverted algebraically "
+              "(slope_mlb_on_kbo * slope_kbo_on_mlb = r_squared):")
+        print(diag.to_string(index=False))
+        diag.to_csv(config.PROCESSED_DIR / f"inversion_{side}.csv", index=False)
+
+    results = evaluate.holdout_validate(pairs, side, n_boot=args.boot,
+                                        train_direction=direction)
     scores = evaluate.scorecard(results)
     if not scores.empty:
         print("\nout-of-sample accuracy:")
@@ -363,6 +377,13 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: pitching, the larger sample)")
     common.add_argument("--boot", type=int, default=200,
                         help="bootstrap resamples for intervals")
+    common.add_argument("--train-direction",
+                        choices=("both", "kbo_to_mlb", "mlb_to_kbo"),
+                        default="both",
+                        help="which league crossings the model may learn "
+                             "from. mlb_to_kbo has the most pairs but runs "
+                             "backwards in time, so it assumes the talent "
+                             "mapping is symmetric.")
     common.add_argument("--min-pt", type=int, default=None,
                         help="minimum plate appearances / batters faced for "
                              "a season to enter the model. Rates built on "

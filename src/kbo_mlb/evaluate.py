@@ -38,12 +38,34 @@ def holdout_validate(
     stats: list[str] | None = None,
     n_boot: int = 200,
     player_key: str = "player_register_id",
+    train_direction: str | None = None,
 ) -> pd.DataFrame:
-    """Fit without `holdout_cohort`, predict it, return one row per case."""
+    """Fit without `holdout_cohort`, predict it, return one row per case.
+
+    `train_direction` restricts which league crossings the fit may learn
+    from:
+
+      None          both directions, with a direction indicator
+      "kbo_to_mlb"  only genuine forward moves - the right direction, but
+                    a very small sample
+      "mlb_to_kbo"  only MLB-to-KBO moves. Time runs backwards in these
+                    pairs, so using them assumes the talent mapping between
+                    the leagues is stable in both directions. That
+                    assumption is exactly what validating on the held-out
+                    posted players tests.
+
+    Note that the target is always the MLB season and the predictor is
+    always the KBO season, whichever direction the player travelled. That
+    is deliberate: you fit the direction you intend to predict. Fitting
+    KBO-from-MLB and algebraically inverting the slope would be wrong (see
+    translate.inversion_diagnostic).
+    """
     if "cohort" not in pairs.columns:
         raise ValueError("pairs must carry a `cohort` column; use cohorts.attach")
 
     train = pairs[pairs["cohort"] != holdout_cohort]
+    if train_direction:
+        train = train[train["direction"] == train_direction]
     test = pairs[(pairs["cohort"] == holdout_cohort)
                  & (pairs["direction"] == "kbo_to_mlb")]
 
