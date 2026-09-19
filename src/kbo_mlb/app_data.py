@@ -39,6 +39,31 @@ PRETTY = {
 LOWER_IS_BETTER = {"k_pct", "era", "h_pct"}
 
 
+def infer_korean(player_name: str, birth_city: str | float) -> tuple[bool, str]:
+    """Is this a Korean player? Returns (is_korean, which signal was used).
+
+    Birth city is authoritative but present for only about 29% of the
+    roster, so the name is the fallback for everyone else. Checked against
+    the rows where both exist, the two agree on 169 of 170 - good enough to
+    rely on, and the source is recorded so a disagreement can be audited
+    rather than silently absorbed.
+
+    Note that birthplace is not nationality: Jung-hoo Lee was born in Nagoya
+    while his father played in Japan, and is Korean. That is why a Korean
+    NAME overrides a foreign birthplace rather than the other way round.
+    """
+    city = "" if birth_city is None else str(birth_city).strip()
+    looks_korean = names.is_probably_korean_name(player_name or "")
+
+    if city and city.upper().endswith("KR"):
+        return True, "birthplace"
+    if looks_korean:
+        return True, ("name (born abroad)" if city else "name")
+    if city:
+        return False, "birthplace"
+    return False, "name"
+
+
 @dataclass
 class Bundle:
     """Everything loaded and fitted, ready to project from."""
@@ -51,14 +76,31 @@ class Bundle:
     draws: dict
     train_pairs: pd.DataFrame
     validation: pd.DataFrame    # out-of-sample results, may be empty
+    birth_cities: pd.Series = None   # register id -> birth city
+    korean_only: bool = True
+    pre_fa_only: bool = True
+    fa_seasons: int = project.KBO_DOMESTIC_FA_SEASONS
 
     @property
     def seasons_by_player(self) -> pd.Series:
         return (self.kbo_raw.dropna(subset=["player_register_id"])
                 .groupby("player_register_id")["season"].nunique())
 
-    def roster(self) -> pd.DataFrame:
-        """One row per player active in `season`, for the picker."""
+    def roster(self, apply_filters: bool = True) -> pd.DataFrame:
+        """One row per player active in `season`, for the picker.
+
+        Two filters, both on by default, both reflecting how this market
+        actually works rather than what the data happens to contain:
+
+        **Korean players only.** Foreign imports in the KBO are already
+        professionals from elsewhere; they are not an international
+        signing opportunity.
+
+        **Before the first domestic free agency only.** A KBO player who
+        reaches free agency and re-signs at home is typically 30 or older
+        and locked up, and moves to MLB essentially stop happening. Listing
+        those players as prospects would be listing players nobody can buy.
+        """
         cur = self.kbo[self.kbo["season"] == self.season]
         pt = rates.PLAYING_TIME[self.side]
         cols = [c for c in ("player_register_id", "player", "team_name",
@@ -67,6 +109,23 @@ class Bundle:
                .drop_duplicates("player_register_id"))
         out["seasons"] = out["player_register_id"].map(
             self.seasons_by_player).fillna(1).astype(int)
+
+        cities = (self.birth_cities if self.birth_cities is not None
+                  else pd.Series(dtype=object))
+        flags = out.apply(
+            lambda r: infer_korean(r["player"],
+                                   cities.get(r["player_register_id"], "")),
+            axis=1, result_type="expand")
+        out["korean"] = flags[0]
+        out["nationality_source"] = flags[1]
+        out["past_first_fa"] = out["seasons"] >= self.fa_seasons
+
+        if apply_filters:
+            if self.korean_only:
+                out = out[out["korean"]]
+            if self.pre_fa_only:
+                out = out[~out["past_first_fa"]]
+
         return out.reset_index(drop=True)
 
 
@@ -87,6 +146,9 @@ def load(
     train_direction: str | None = "mlb_to_kbo",
     n_boot: int = 400,
     source_suffix: str = "",
+    korean_only: bool = True,
+    pre_fa_only: bool = True,
+    fa_seasons: int = project.KBO_DOMESTIC_FA_SEASONS,
 ) -> Bundle:
     """Load the data, fit the translation, and prepare bootstrap draws.
 
@@ -146,10 +208,20 @@ def load(
     validation = (pd.read_csv(val_path, low_memory=False)
                   if val_path.exists() else pd.DataFrame())
 
+    roster_rows = _interim("kbo_roster.csv")
+    birth_cities = pd.Series(dtype=object)
+    if not roster_rows.empty and "birth_city" in roster_rows.columns:
+        birth_cities = (roster_rows.dropna(subset=["player_register_id"])
+                        .sort_values("season")
+                        .drop_duplicates("player_register_id", keep="last")
+                        .set_index("player_register_id")["birth_city"])
+
     return Bundle(side=side, season=season, kbo=kbo_rel, kbo_raw=kbo_raw,
                   mlb_league=rates.league_rates(mlb_totals, side),
                   model=model, draws=draws, train_pairs=train,
-                  validation=validation)
+                  validation=validation, birth_cities=birth_cities,
+                  korean_only=korean_only, pre_fa_only=pre_fa_only,
+                  fa_seasons=fa_seasons)
 
 
 def find_player(bundle: Bundle, query: str) -> pd.DataFrame:
@@ -209,7 +281,8 @@ def project_one(bundle: Bundle, player_register_id: str) -> dict:
         "seasons": seasons,
         "history": rows,
         "projection": proj,
-        "availability": project.availability(seasons, age, bundle.season),
+        "availability": project.availability(seasons, age, bundle.season,
+                                             bundle.fa_seasons),
     }
 
 

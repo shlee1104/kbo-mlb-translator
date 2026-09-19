@@ -32,8 +32,11 @@ st.set_page_config(page_title="KBO → MLB Translator",
 
 
 @st.cache_data(show_spinner="Loading data and fitting the translation…")
-def get_bundle(side: str, season: int, min_pt: int):
-    return app_data.load(side=side, season=season, min_playing_time=min_pt)
+def get_bundle(side: str, season: int, min_pt: int, korean_only: bool,
+               pre_fa_only: bool, fa_seasons: int):
+    return app_data.load(side=side, season=season, min_playing_time=min_pt,
+                         korean_only=korean_only, pre_fa_only=pre_fa_only,
+                         fa_seasons=fa_seasons)
 
 
 # ---------------------------------------------------------------------------
@@ -57,18 +60,44 @@ min_pt = st.sidebar.slider(
     help="Plate appearances (hitters) or batters faced (pitchers) for a "
          "season to count. Rates built on very little playing time are noise.")
 
+st.sidebar.divider()
+st.sidebar.caption("**Who counts as a signing target**")
+
+korean_only = st.sidebar.checkbox(
+    "Korean players only", value=True,
+    help="Foreign imports in the KBO are already professionals from "
+         "elsewhere, so they are not an international signing opportunity.")
+pre_fa_only = st.sidebar.checkbox(
+    "Before first free agency only", value=True,
+    help="Once a KBO player reaches free agency and re-signs at home he is "
+         "usually 30+ and locked up, and moves to MLB effectively stop. "
+         "Listing them would be listing players nobody can buy.")
+fa_seasons = st.sidebar.slider(
+    "Seasons to domestic free agency", 6, 10,
+    app_data.project.KBO_DOMESTIC_FA_SEASONS,
+    help="Commonly cited as 8 for high-school entrants and 9 for college "
+         "entrants. Adjustable because it is not verified to the same "
+         "standard as the posting and bonus-pool rules.")
+
 try:
-    bundle = get_bundle(side, int(season), int(min_pt))
+    bundle = get_bundle(side, int(season), int(min_pt), korean_only,
+                        pre_fa_only, int(fa_seasons))
 except FileNotFoundError as exc:
     st.error(str(exc))
     st.stop()
 
 roster = bundle.roster()
+everyone = bundle.roster(apply_filters=False)
 if roster.empty:
-    st.warning(f"No {side} players met the playing-time threshold in {season}.")
+    st.warning(
+        f"No {side} players in {season} passed every filter. Try lowering "
+        f"the playing-time threshold or turning a filter off.")
     st.stop()
 
-st.sidebar.caption(f"{len(roster)} players qualified in {season}")
+removed = len(everyone) - len(roster)
+st.sidebar.caption(
+    f"**{len(roster)}** signing targets in {season}"
+    + (f"  \n({removed} of {len(everyone)} filtered out)" if removed else ""))
 
 tab_player, tab_browse, tab_trust = st.tabs(
     ["Player", "Browse everyone", "How to read this"])
@@ -93,11 +122,28 @@ with tab_player:
     st.header(info["name"])
     avail = info["availability"]
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Age", f"{info['age']:.0f}")
     c2.metric("KBO seasons", info["seasons"])
     c3.metric("Earliest posting", avail["earliest_posting_season"])
-    c4.metric("Age when posted", f"{avail['age_at_earliest_posting']:.0f}")
+    c4.metric("Domestic FA", avail["domestic_fa_season"])
+    c5.metric("Age when posted", f"{avail['age_at_earliest_posting']:.0f}")
+
+    # Postable at 7 seasons, a domestic free agent at about 8. The gap
+    # between those is the whole opportunity.
+    if avail["past_first_fa"]:
+        st.error(
+            "**Window closed.** He has already reached domestic free "
+            "agency. Historically, KBO players who re-sign at home do not "
+            "move to MLB afterwards.")
+    elif avail["acquisition_window_seasons"] > 0:
+        st.info(
+            f"**Acquisition window: {avail['window']}** "
+            f"({avail['acquisition_window_seasons']} season"
+            f"{'s' if avail['acquisition_window_seasons'] != 1 else ''}). "
+            f"He can be posted from {avail['earliest_posting_season']} and "
+            f"reaches domestic free agency in {avail['domestic_fa_season']}. "
+            f"That gap is the whole opportunity.")
 
     # The single most decision-relevant fact on the page.
     if avail["bonus_pool_exempt_if_posted_then"]:
@@ -165,9 +211,12 @@ with tab_player:
 # ---------------------------------------------------------------------------
 
 with tab_browse:
-    st.subheader(f"Every qualified {season} KBO player")
-    st.caption("Filter, then open a name on the Player tab for the full "
-               "projection and signing timeline.")
+    st.subheader(f"{season} signing targets")
+    st.caption(
+        "Korean players who have not yet reached domestic free agency. "
+        "*Postable* is the first season his club could post him; *FA* is "
+        "when he can re-sign at home instead. Open a name on the Player "
+        "tab for the full projection.")
 
     f1, f2 = st.columns(2)
     ages = roster["age"].dropna()
@@ -183,10 +232,15 @@ with tab_browse:
     view = view.assign(**{
         "Postable": view["seasons"].map(
             lambda s: bundle.season
-            + max(0, app_data.project.SEASONS_FOR_POSTING - s))})
+            + max(0, app_data.project.SEASONS_FOR_POSTING - s)),
+        "FA": view["seasons"].map(
+            lambda s: bundle.season + max(0, bundle.fa_seasons - s)),
+        "Nationality from": view["nationality_source"],
+    })
 
     cols = [c for c in ("player", "team_name", "age", "seasons", "Postable",
-                        "PA", "batters_faced") if c in view.columns]
+                        "FA", "Nationality from", "PA", "batters_faced")
+            if c in view.columns]
     st.dataframe(view[cols], use_container_width=True, hide_index=True)
     st.caption(f"{len(view)} players")
 

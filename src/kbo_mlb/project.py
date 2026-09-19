@@ -33,17 +33,41 @@ from __future__ import annotations
 
 import pandas as pd
 
-# Approximate, and deliberately named so nobody mistakes them for statute.
+# Verified against public sources, September 2026. Still worth re-checking:
+# the Major League labour agreement expires 1 December 2026.
+#
+#   posting at 7 KBO seasons
+#     https://en.wikipedia.org/wiki/Posting_system_(KBO)
+#   international free agency at 9 years, and the bonus-pool exemption at
+#   25+ with 6+ professional seasons
+#     https://www.mlb.com/glossary/transactions/korean-posting-system
 SEASONS_FOR_POSTING = 7
-SEASONS_FOR_FREE_AGENCY = 9
+SEASONS_FOR_INTERNATIONAL_FA = 9
 POOL_EXEMPT_MIN_AGE = 25
 POOL_EXEMPT_MIN_PRO_SEASONS = 6
+
+# Domestic KBO free agency - when a player can re-sign at home for real
+# money. NOT verified to the same standard as the numbers above, which is
+# why it is a parameter rather than a constant buried in a formula. The
+# commonly cited thresholds are 8 seasons for high-school entrants and 9
+# for college entrants; 8 is the conservative default.
+#
+# This is the one that actually bounds the market. A KBO player becomes
+# postable at 7 seasons and a domestic free agent at about 8, so the window
+# in which an MLB club can realistically acquire him is roughly one to two
+# seasons wide. After he signs that first domestic deal he is typically 30
+# or older and locked up, and MLB interest drops away.
+KBO_DOMESTIC_FA_SEASONS = 8
+
+# Backwards-compatible alias.
+SEASONS_FOR_FREE_AGENCY = SEASONS_FOR_INTERNATIONAL_FA
 
 
 def availability(
     seasons_played: int,
     age_now: float,
     current_season: int,
+    fa_seasons: int = KBO_DOMESTIC_FA_SEASONS,
 ) -> dict:
     """When could this player be posted, and would he be pool-capped?
 
@@ -60,6 +84,15 @@ def availability(
     # How much longer until the pool no longer applies, if it does now?
     years_to_exempt = max(0, POOL_EXEMPT_MIN_AGE - age_then)
 
+    # When does he reach domestic free agency, and has he passed it?
+    fa_season = current_season + max(0, fa_seasons - seasons_played)
+    past_fa = seasons_played >= fa_seasons
+
+    # The seasons in which he is postable but has not yet re-signed at home.
+    window_start = max(current_season, earliest)
+    window_end = fa_season - 1
+    window = max(0, window_end - window_start + 1) if not past_fa else 0
+
     return {
         "seasons_played": seasons_played,
         "seasons_until_posting_eligible": seasons_to_go,
@@ -70,6 +103,11 @@ def availability(
                                            else round(years_to_exempt, 1)),
         "note": ("market contract" if exempt
                  else "pool-capped: bonus slot only"),
+        "domestic_fa_season": fa_season,
+        "past_first_fa": past_fa,
+        "acquisition_window_seasons": window,
+        "window": (f"{window_start}-{window_end}"
+                   if window > 0 else "closed"),
     }
 
 

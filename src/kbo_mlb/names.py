@@ -109,7 +109,7 @@ _SURNAME_CLASSES: dict[str, tuple[str, ...]] = {
     "JEON":  ("jeon", "jun", "chun", "chon", "jhun", "chon"),
     "HONG":  ("hong", "hoong"),
     "KO":    ("ko", "go", "koh", "goh", "kho"),
-    "MOON":  ("moon", "mun", "mune"),
+    "MOON":  ("moon", "mun", "mune", "mon"),
     "YANG":  ("yang", "ryang"),
     "SON":   ("son", "sohn", "sonn"),
     "BAE":   ("bae", "pae", "bai", "bay"),
