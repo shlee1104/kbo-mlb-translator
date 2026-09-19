@@ -284,6 +284,48 @@ def check_league_totals_reconcile(
     )
 
 
+def check_league_sides_agree(league_totals: pd.DataFrame,
+                             tolerance: float = 0.005) -> CheckResult:
+    """League strikeout rate must be the same from both sides of the ball.
+
+    Every strikeout is recorded once by a batter and once by a pitcher, so
+    SO/PA from the league batting table and SO/BF from the league pitching
+    table describe the same events. They are published as two separate
+    tables, which makes this a genuine cross-source check: if a column is
+    mis-parsed in one of them, the two stop agreeing.
+    """
+    from . import rates  # local import keeps validate importable standalone
+
+    if league_totals.empty or "side" not in league_totals.columns:
+        return _result("cross_source.league_sides", False, "warning",
+                       "league totals unavailable for the two-sided check")
+
+    bat = rates.league_rates(league_totals, "batting")
+    pit = rates.league_rates(league_totals, "pitching")
+    if bat.empty or pit.empty:
+        return _result("cross_source.league_sides", False, "warning",
+                       "one side of the league totals is missing")
+
+    merged = bat[["season", "lg_k_pct"]].merge(
+        pit[["season", "lg_k_pct"]], on="season", suffixes=("_bat", "_pit")
+    ).dropna()
+    merged["diff"] = (merged["lg_k_pct_bat"] - merged["lg_k_pct_pit"]).abs()
+    bad = merged[merged["diff"] > tolerance]
+    worst = float(merged["diff"].max()) if not merged.empty else float("nan")
+
+    return _result(
+        "cross_source.league_sides",
+        bad.empty,
+        "error",
+        f"league K% agrees between the batting and pitching tables "
+        f"(worst season differs by {worst:.4f})" if bad.empty
+        else f"{len(bad)} seasons where league K% differs between the "
+             f"batting and pitching tables by more than {tolerance}",
+        bad.reset_index(drop=True) if not bad.empty else None,
+        worst_abs_diff=worst,
+    )
+
+
 def check_season_coverage(df: pd.DataFrame, expected_start: int,
                           expected_end: int) -> CheckResult:
     """Which seasons in the requested window produced no rows at all?"""
@@ -397,6 +439,9 @@ def run_all(
             batting, league_totals[league_totals.get("side") == "batting"]
             if "side" in league_totals.columns else league_totals))
         results.append(check_season_coverage(batting, start_season, end_season))
+
+    if not league_totals.empty:
+        results.append(check_league_sides_agree(league_totals))
 
     if not roster.empty and "date_of_birth" in roster.columns:
         dob = pd.to_datetime(roster["date_of_birth"], errors="coerce")

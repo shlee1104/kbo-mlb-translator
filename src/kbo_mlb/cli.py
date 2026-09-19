@@ -15,7 +15,8 @@ import sys
 
 import pandas as pd
 
-from . import config, crosswalk, mlb_data, scrape_kbo, validate
+from . import (config, crosswalk, mlb_bref, mlb_data, mlb_statsapi,
+               scrape_kbo, validate)
 from .http_client import CachedFetcher
 
 
@@ -131,6 +132,81 @@ def cmd_audit(args) -> int:
     return 1 if validate.has_errors(results) else 0
 
 
+def cmd_mlb(args) -> int:
+    """Pull MLB season stats for the matched players. Needs network.
+
+    Two independent sources, because having both is what makes a real
+    cross-source check on the MLB side possible - the same thing the KBO
+    side already does against published league totals.
+
+      statsapi (default)  MLB's official public API. JSON, keyed by MLBAM
+                          id, roughly two minutes for the whole pull.
+      bref                Baseball-Reference player and league pages. Same
+                          provider as the KBO side, so identical
+                          definitional rules, but ~30 minutes at the polite
+                          crawl delay.
+
+    FanGraphs is not used: pybaseball reaches it through a legacy endpoint
+    that now answers 403.
+    """
+    cw_path = config.PROCESSED_DIR / "crosswalk.csv"
+    if not cw_path.exists():
+        print("run `crosswalk` first", file=sys.stderr)
+        return 2
+    cw = pd.read_csv(cw_path, low_memory=False)
+    seasons = list(range(args.start, args.end + 1))
+    suffix = "" if args.source == "statsapi" else "_bref"
+
+    if args.source == "statsapi":
+        ids = cw["key_mlbam"].dropna().astype(int).unique().tolist()
+        print(f"fetching {len(ids)} matched players from MLB Stats API...")
+        fetcher = mlb_statsapi.make_fetcher(offline=args.offline)
+
+        for side in ("batting", "pitching"):
+            df = mlb_statsapi.fetch_player_seasons(ids, side, fetcher)
+            name = f"mlb_{side}{suffix}.csv"
+            df.to_csv(_path(name), index=False)
+            print(f"  {side}: {len(df):>6} player-seasons -> {_path(name)}")
+
+        totals = pd.concat(
+            [mlb_statsapi.fetch_league_totals(seasons, s, fetcher)
+             for s in ("batting", "pitching")], ignore_index=True)
+        totals.to_csv(_path(f"mlb_league_totals{suffix}.csv"), index=False)
+        print(f"  league totals: {len(totals)} rows")
+        print(f"\ncache hits: {fetcher.stats['cache_hits']}, "
+              f"network fetches: {fetcher.stats['network_fetches']}")
+        return 0
+
+    ids = sorted(cw["key_bbref"].dropna().astype(str).unique())
+    print(f"{len(ids)} matched players to pull "
+          f"(~{len(ids) * 3.5 / 60:.0f} min at the polite rate)")
+
+    fetcher = CachedFetcher(offline=args.offline)
+    got = mlb_bref.fetch_players(fetcher, ids)
+
+    # Written under a distinct suffix so the two sources never overwrite one
+    # another - keeping both side by side is what allows the cross-check.
+    for name, df in ((f"mlb_batting{suffix}.csv", got["batting"]),
+                     (f"mlb_pitching{suffix}.csv", got["pitching"])):
+        df.to_csv(_path(name), index=False)
+        print(f"  wrote {len(df):>6} player-seasons -> {_path(name)}")
+
+    if not got["failures"].empty:
+        got["failures"].to_csv(_path("mlb_fetch_failures.csv"), index=False)
+        print(f"  {len(got['failures'])} players failed "
+              f"-> {_path('mlb_fetch_failures.csv')}")
+
+    years = list(range(args.start, args.end + 1))
+    print(f"pulling MLB league totals for {len(years)} seasons...")
+    totals = mlb_bref.fetch_league_totals(fetcher, years)
+    totals.to_csv(_path(f"mlb_league_totals{suffix}.csv"), index=False)
+    print(f"  wrote {len(totals):>6} rows -> {_path('mlb_league_totals.csv')}")
+
+    print(f"\ncache hits: {fetcher.stats['cache_hits']}, "
+          f"network fetches: {fetcher.stats['network_fetches']}")
+    return 0
+
+
 def cmd_counts(args) -> int:
     """Sample size for the translation model - decides hitters vs pitchers."""
     cw = config.PROCESSED_DIR / "crosswalk.csv"
@@ -184,6 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--start", type=int,
                         default=config.DEFAULT_START_SEASON)
     common.add_argument("--end", type=int, default=config.DEFAULT_END_SEASON)
+    common.add_argument("--source", choices=("statsapi", "bref"),
+                        default="statsapi",
+                        help="MLB data source for the `mlb` command "
+                             "(default: statsapi)")
     common.add_argument("--offline", action="store_true",
                         help="fail instead of hitting the network "
                              "(uses only the on-disk cache)")
@@ -196,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, fn, help_text in (
         ("scrape", cmd_scrape, "crawl KBO season/team/player pages"),
         ("crosswalk", cmd_crosswalk, "build the KBO <-> MLB player crosswalk"),
+        ("mlb", cmd_mlb, "pull MLB season stats (needs network)"),
         ("audit", cmd_audit, "run data quality checks"),
         ("counts", cmd_counts, "report two-league sample sizes"),
         ("all", cmd_all, "run the whole pipeline"),

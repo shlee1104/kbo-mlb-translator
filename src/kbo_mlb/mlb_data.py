@@ -111,7 +111,10 @@ def fetch_mlb_batting(start: int, end: int) -> pd.DataFrame:
     if cache.exists():
         return pd.read_csv(cache, low_memory=False)
 
-    df = batting_stats(start, end, qual=1)
+    # ind=1 returns one row per player-SEASON. The default in some pybaseball
+    # versions aggregates the whole range into a single row per player, which
+    # would silently destroy the season structure the model depends on.
+    df = batting_stats(start, end, qual=1, ind=1)
     df.to_csv(cache, index=False)
     log.info("MLB batting: %d player-seasons cached", len(df))
     return df
@@ -129,7 +132,7 @@ def fetch_mlb_pitching(start: int, end: int) -> pd.DataFrame:
     if cache.exists():
         return pd.read_csv(cache, low_memory=False)
 
-    df = pitching_stats(start, end, qual=1)
+    df = pitching_stats(start, end, qual=1, ind=1)
     df.to_csv(cache, index=False)
     log.info("MLB pitching: %d player-seasons cached", len(df))
     return df
