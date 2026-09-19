@@ -53,6 +53,17 @@ def holdout_validate(
         return pd.DataFrame()
 
     model = translate.fit(train, side, stats=stats)
+
+    # Resample once per statistic, not once per player. The resampling does
+    # not depend on who is being predicted, and doing it per case turned a
+    # validation run into something slower than the entire data pull.
+    draws = {}
+    for stat in model.fits:
+        d = translate.bootstrap_coefficients(
+            train, side, stat, n_boot=n_boot, player_key=player_key)
+        if d is not None:
+            draws[stat] = d
+
     rows: list[dict] = []
 
     for _, case in test.iterrows():
@@ -68,9 +79,9 @@ def holdout_validate(
 
             point = translate.predict_relative(model, stat, float(kbo_rel),
                                                age, "kbo_to_mlb")
-            interval = translate.bootstrap_predict(
-                train, side, stat, float(kbo_rel), age, "kbo_to_mlb",
-                n_boot=n_boot, player_key=player_key)
+            interval = (translate.interval_from_draws(
+                draws[stat], float(kbo_rel), age, "kbo_to_mlb")
+                if stat in draws else {})
 
             rows.append({
                 "player": case.get("player"),

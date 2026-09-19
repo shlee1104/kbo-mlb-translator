@@ -274,6 +274,111 @@ def predict_relative(model: TranslationModel, stat: str,
     return float(np.exp(log_pred))
 
 
+@dataclass
+class BootstrapDraws:
+    """Coefficient vectors from refitting on resampled players."""
+    stat: str
+    betas: np.ndarray        # (n_draws, 4)
+    residual_sds: np.ndarray  # (n_draws,)
+
+    def __len__(self) -> int:
+        return len(self.residual_sds)
+
+
+def bootstrap_coefficients(
+    pairs: pd.DataFrame,
+    side: str,
+    stat: str,
+    n_boot: int = 500,
+    seed: int = 0,
+    player_key: str = "player_register_id",
+) -> BootstrapDraws | None:
+    """Refit the model on player-resampled data, `n_boot` times.
+
+    Resampling is by **player**, not by row. One player can contribute
+    several pairs, and those are not independent observations of anything;
+    resampling rows would treat them as if they were and produce intervals
+    that are far too narrow.
+
+    The design matrix is built once and rows are gathered by index on each
+    draw. Refitting from the DataFrame every time instead - which is what
+    this did first - made a single validation run take longer than the
+    entire data pull.
+    """
+    X, y, w, used = _design(pairs, stat)
+    if len(y) < MIN_PAIRS_TO_FIT:
+        return None
+
+    if player_key in used.columns:
+        codes, _ = pd.factorize(used[player_key])
+    else:
+        codes = np.arange(len(used))
+    n_players = int(codes.max()) + 1
+    rows_by_player = [np.flatnonzero(codes == p) for p in range(n_players)]
+
+    rng = np.random.default_rng(seed)
+    betas: list[np.ndarray] = []
+    sds: list[float] = []
+
+    for _ in range(n_boot):
+        pick = rng.integers(0, n_players, size=n_players)
+        idx = np.concatenate([rows_by_player[p] for p in pick])
+        if len(idx) <= X.shape[1]:
+            continue
+        Xb, yb, wb = X[idx], y[idx], w[idx]
+        sw = np.sqrt(wb)
+        try:
+            beta, *_ = np.linalg.lstsq(Xb * sw[:, None], yb * sw, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        resid = yb - Xb @ beta
+        dof = max(len(yb) - Xb.shape[1], 1)
+        betas.append(beta)
+        sds.append(float(np.sqrt(np.sum(wb * resid**2) / dof)))
+
+    if not betas:
+        return None
+    return BootstrapDraws(stat, np.vstack(betas), np.array(sds))
+
+
+def _row(kbo_relative: float, age: float, direction: str) -> np.ndarray:
+    return np.array([
+        1.0,
+        np.log(kbo_relative),
+        (age - AGE_CENTRE) / 10.0,
+        1.0 if direction == "kbo_to_mlb" else 0.0,
+    ])
+
+
+def interval_from_draws(
+    draws: BootstrapDraws,
+    kbo_relative: float,
+    age: float,
+    direction: str = "kbo_to_mlb",
+    seed: int = 0,
+) -> dict:
+    """Turn bootstrap coefficients into a prediction interval for one player.
+
+    Covers uncertainty in the fitted relationship *plus* the residual spread
+    of individual players around it, which is what you want when asking
+    "what might this player do" rather than "where is the average line".
+    """
+    x = _row(kbo_relative, age, direction)
+    centres = draws.betas @ x
+    rng = np.random.default_rng(seed)
+    sample = np.exp(centres + rng.normal(0.0, draws.residual_sds))
+
+    return {
+        "point": float(np.exp(np.mean(centres))),
+        "p10": float(np.percentile(sample, 10)),
+        "p25": float(np.percentile(sample, 25)),
+        "p50": float(np.percentile(sample, 50)),
+        "p75": float(np.percentile(sample, 75)),
+        "p90": float(np.percentile(sample, 90)),
+        "n_draws": len(sample),
+    }
+
+
 def bootstrap_predict(
     pairs: pd.DataFrame,
     side: str,
@@ -285,49 +390,17 @@ def bootstrap_predict(
     seed: int = 0,
     player_key: str = "player_register_id",
 ) -> dict:
-    """Refit on resampled players to get an honest interval.
+    """Convenience wrapper: resample and predict one player in one call.
 
-    Resampling is by **player**, not by row. One player can contribute
-    several pairs, and those are not independent observations of anything;
-    resampling rows would treat them as if they were and produce intervals
-    that are far too narrow.
-
-    The interval returned covers uncertainty in the fitted relationship plus
-    the residual spread of individual players around it - which is what you
-    actually want when asking "what might *this* player do", rather than
-    "where is the average line".
+    When predicting many players from the same fit, call
+    `bootstrap_coefficients` once and `interval_from_draws` per player
+    instead - the resampling is the expensive part and it does not depend
+    on which player you are asking about.
     """
-    rng = np.random.default_rng(seed)
-    players = pairs[player_key].dropna().unique()
-    draws: list[float] = []
-
-    for _ in range(n_boot):
-        pick = rng.choice(players, size=len(players), replace=True)
-        resampled = pd.concat(
-            [pairs[pairs[player_key] == p] for p in pick], ignore_index=True)
-        try:
-            m = fit(resampled, side, stats=[stat])
-        except Exception:
-            continue
-        if stat not in m.fits:
-            continue
-        centre = np.log(predict_relative(m, stat, kbo_relative, age, direction))
-        # Add one draw of individual-player scatter.
-        draws.append(float(np.exp(centre + rng.normal(0, m.fits[stat].residual_sd))))
-
-    if not draws:
+    draws = bootstrap_coefficients(pairs, side, stat, n_boot, seed, player_key)
+    if draws is None:
         return {}
-
-    arr = np.array(draws)
-    return {
-        "point": float(np.exp(np.mean(np.log(arr)))),
-        "p10": float(np.percentile(arr, 10)),
-        "p25": float(np.percentile(arr, 25)),
-        "p50": float(np.percentile(arr, 50)),
-        "p75": float(np.percentile(arr, 75)),
-        "p90": float(np.percentile(arr, 90)),
-        "n_draws": len(arr),
-    }
+    return interval_from_draws(draws, kbo_relative, age, direction, seed)
 
 
 def to_absolute(relative: float, league_rate: float) -> float:

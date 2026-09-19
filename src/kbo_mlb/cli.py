@@ -230,6 +230,9 @@ def _relative_frames(args):
 
     out = {}
     for side in ("batting", "pitching"):
+        min_pt = getattr(args, "min_pt", None) or (
+            config.MIN_PA_FOR_MODEL if side == "batting"
+            else config.MIN_BF_FOR_MODEL)
         kbo = _load(f"kbo_{side}.csv")
         mlb = _load(f"mlb_{side}{suffix}.csv", required=False)
         if mlb.empty:
@@ -244,12 +247,10 @@ def _relative_frames(args):
         out[side] = (
             rates.add_relative_rates(
                 kbo, rates.league_rates(kbo_totals, side), side,
-                min_playing_time=(config.MIN_PA_FOR_MODEL if side == "batting"
-                                  else config.MIN_BF_FOR_MODEL)),
+                min_playing_time=min_pt),
             rates.add_relative_rates(
                 mlb, rates.league_rates(mlb_totals, side), side,
-                min_playing_time=(config.MIN_PA_FOR_MODEL if side == "batting"
-                                  else config.MIN_BF_FOR_MODEL)),
+                min_playing_time=min_pt),
         )
     return out
 
@@ -362,6 +363,12 @@ def main(argv: list[str] | None = None) -> int:
                              "(default: pitching, the larger sample)")
     common.add_argument("--boot", type=int, default=200,
                         help="bootstrap resamples for intervals")
+    common.add_argument("--min-pt", type=int, default=None,
+                        help="minimum plate appearances / batters faced for "
+                             "a season to enter the model. Rates built on "
+                             "little playing time are noisy, and noise in "
+                             "the predictor biases the fitted slope toward "
+                             "zero, so this materially changes the result.")
     common.add_argument("--source", choices=("statsapi", "bref"),
                         default="statsapi",
                         help="MLB data source for the `mlb` command "
