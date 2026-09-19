@@ -15,8 +15,8 @@ import sys
 
 import pandas as pd
 
-from . import (config, crosswalk, mlb_bref, mlb_data, mlb_statsapi,
-               scrape_kbo, validate)
+from . import (cohorts, config, crosswalk, evaluate, mlb_bref, mlb_data,
+               mlb_statsapi, rates, scrape_kbo, translate, validate)
 from .http_client import CachedFetcher
 
 
@@ -207,6 +207,92 @@ def cmd_mlb(args) -> int:
     return 0
 
 
+def _relative_frames(args):
+    """KBO and MLB player-seasons, both expressed relative to their league."""
+    suffix = "" if args.source == "statsapi" else "_bref"
+    cw = pd.read_csv(config.PROCESSED_DIR / "crosswalk.csv", low_memory=False)
+    id_map = (cw[["player_register_id", "key_mlbam"]]
+              .dropna().drop_duplicates())
+    id_map["key_mlbam"] = id_map["key_mlbam"].astype(int)
+
+    kbo_totals = _load("kbo_league_totals.csv")
+    mlb_totals = _load(f"mlb_league_totals{suffix}.csv", required=False)
+
+    out = {}
+    for side in ("batting", "pitching"):
+        kbo = _load(f"kbo_{side}.csv")
+        mlb = _load(f"mlb_{side}{suffix}.csv", required=False)
+        if mlb.empty:
+            print(f"missing MLB {side} data. Run `mlb` first.",
+                  file=sys.stderr)
+            sys.exit(2)
+        mlb = mlb.copy()
+        mlb["key_mlbam"] = pd.to_numeric(mlb["key_mlbam"],
+                                         errors="coerce").astype("Int64")
+        mlb = mlb.merge(id_map, on="key_mlbam", how="inner")
+
+        out[side] = (
+            rates.add_relative_rates(
+                kbo, rates.league_rates(kbo_totals, side), side,
+                min_playing_time=(config.MIN_PA_FOR_MODEL if side == "batting"
+                                  else config.MIN_BF_FOR_MODEL)),
+            rates.add_relative_rates(
+                mlb, rates.league_rates(mlb_totals, side), side,
+                min_playing_time=(config.MIN_PA_FOR_MODEL if side == "batting"
+                                  else config.MIN_BF_FOR_MODEL)),
+        )
+    return out
+
+
+def cmd_model(args) -> int:
+    """Fit the translation, holding out players posted from the KBO."""
+    frames = _relative_frames(args)
+    side = args.side
+
+    kbo_rel, mlb_rel = frames[side]
+    pairs = translate.build_pairs(kbo_rel, mlb_rel)
+    if pairs.empty:
+        print("no league crossings found - check the crosswalk",
+              file=sys.stderr)
+        return 1
+
+    groups = cohorts.classify(kbo_rel, mlb_rel)
+    pairs = cohorts.attach(pairs, groups)
+
+    print(f"{len(pairs)} season pairs from "
+          f"{pairs['player_register_id'].nunique()} players")
+    print(pairs["cohort"].value_counts().to_string())
+    print(f"\ndirections:\n{pairs['direction'].value_counts().to_string()}")
+
+    train = pairs[pairs["cohort"] != cohorts.POSTED]
+    model = translate.fit(train, side)
+    if not model.fits:
+        print("not enough usable pairs to fit any statistic", file=sys.stderr)
+        return 1
+
+    print(f"\nfitted on {len(train)} pairs (posted players held out):")
+    print(model.summary().to_string(index=False))
+
+    results = evaluate.holdout_validate(pairs, side, n_boot=args.boot)
+    scores = evaluate.scorecard(results)
+    if not scores.empty:
+        print("\nout-of-sample accuracy:")
+        print(scores.to_string(index=False))
+
+    model.summary().to_csv(
+        config.PROCESSED_DIR / f"translation_{side}.csv", index=False)
+    pairs.to_csv(config.PROCESSED_DIR / f"pairs_{side}.csv", index=False)
+    if not results.empty:
+        results.to_csv(
+            config.PROCESSED_DIR / f"holdout_{side}.csv", index=False)
+
+    report = config.REPORTS_DIR / f"validation_{side}.md"
+    report.write_text(evaluate.to_markdown(results, scores, model),
+                      encoding="utf-8")
+    print(f"\n  wrote {report}")
+    return 0
+
+
 def cmd_counts(args) -> int:
     """Sample size for the translation model - decides hitters vs pitchers."""
     cw = config.PROCESSED_DIR / "crosswalk.csv"
@@ -260,6 +346,12 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--start", type=int,
                         default=config.DEFAULT_START_SEASON)
     common.add_argument("--end", type=int, default=config.DEFAULT_END_SEASON)
+    common.add_argument("--side", choices=("batting", "pitching"),
+                        default="pitching",
+                        help="which side of the ball to model "
+                             "(default: pitching, the larger sample)")
+    common.add_argument("--boot", type=int, default=200,
+                        help="bootstrap resamples for intervals")
     common.add_argument("--source", choices=("statsapi", "bref"),
                         default="statsapi",
                         help="MLB data source for the `mlb` command "
@@ -278,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         ("crosswalk", cmd_crosswalk, "build the KBO <-> MLB player crosswalk"),
         ("mlb", cmd_mlb, "pull MLB season stats (needs network)"),
         ("audit", cmd_audit, "run data quality checks"),
+        ("model", cmd_model, "fit the translation and validate out of sample"),
         ("counts", cmd_counts, "report two-league sample sizes"),
         ("all", cmd_all, "run the whole pipeline"),
     ):
