@@ -31,6 +31,16 @@ PLAYER_ID_RE = re.compile(r"player\.fcgi\?id=([^&\"']+)")
 TEAM_ID_RE = re.compile(r"team\.cgi\?id=([^&\"']+)")
 LEAGUE_ID_RE = re.compile(r"league\.cgi\?id=([^&\"']+)")
 
+# A row is a data row if it carries at least one of these. Baseball-Reference
+# uses one naming vintage on the register (`year_ID`, `team_ID`) and another
+# on the main site's player pages (`year_id`, `team_name_abbr`), so both are
+# listed. Missing a name here makes an entire table parse as empty.
+_IDENTITY_KEYS = (
+    "player", "name_display",
+    "team_ID", "team_id", "team_name_abbr",
+    "year_ID", "year_id",
+)
+
 # Rows that are totals/averages rather than players.
 _AGGREGATE_LABELS = {
     "team totals",
@@ -73,8 +83,12 @@ def _cell_text(cell) -> str:
 
 
 def _row_is_aggregate(row: dict[str, str]) -> bool:
-    label = (row.get("player") or row.get("team_ID") or "").strip().lower()
-    return label in _AGGREGATE_LABELS
+    for key in ("player", "name_display", "team_ID", "team_id",
+                "team_name_abbr"):
+        label = (row.get(key) or "").strip().lower()
+        if label in _AGGREGATE_LABELS:
+            return True
+    return False
 
 
 def parse_table(soup: BeautifulSoup, table_id: str) -> list[dict[str, str]]:
@@ -136,7 +150,7 @@ def _parse_row(tr) -> dict[str, str] | None:
     if not row:
         return None
     # A row with no identifying label is padding.
-    if not any(row.get(k) for k in ("player", "team_ID", "year_ID")):
+    if not any(row.get(k) for k in _IDENTITY_KEYS):
         return None
 
     row["is_aggregate"] = str(_row_is_aggregate(row))
