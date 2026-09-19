@@ -198,6 +198,17 @@ class TestNationality(unittest.TestCase):
         # player "Mon", which the surname table originally missed.
         self.assertTrue(app_data.infer_korean("Yong Ik Mon", "")[0])
 
+    def test_missing_birthplace_is_not_reported_as_born_abroad(self):
+        # pandas gives NaN for a missing birthplace and str(nan) is "nan",
+        # a non-empty string. That mislabelled 62 of 119 players as born
+        # abroad when only 57 had any birthplace recorded at all.
+        import numpy as np
+        for missing in (None, float("nan"), np.nan, "", "nan", "-"):
+            with self.subTest(missing=missing):
+                korean, source = app_data.infer_korean("Do Yeong Kim", missing)
+                self.assertTrue(korean)
+                self.assertEqual(source, "name")
+
 
 class TestSigningTargetFilters(unittest.TestCase):
     def _bundle(self, **kw):

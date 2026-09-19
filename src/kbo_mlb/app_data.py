@@ -52,7 +52,13 @@ def infer_korean(player_name: str, birth_city: str | float) -> tuple[bool, str]:
     while his father played in Japan, and is Korean. That is why a Korean
     NAME overrides a foreign birthplace rather than the other way round.
     """
-    city = "" if birth_city is None else str(birth_city).strip()
+    # pandas hands back NaN for a missing value, and str(nan) is "nan",
+    # which is a non-empty string. Left unhandled, every player with no
+    # recorded birthplace gets labelled "born abroad".
+    city = "" if birth_city is None or pd.isna(birth_city) else str(
+        birth_city).strip()
+    if city.lower() in {"nan", "none", "-"}:
+        city = ""
     looks_korean = names.is_probably_korean_name(player_name or "")
 
     if city and city.upper().endswith("KR"):
