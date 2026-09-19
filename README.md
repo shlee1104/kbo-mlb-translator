@@ -41,8 +41,8 @@ confidently wrong, and nobody will be able to tell you why.
 | Phase | In this repo |
 |---|---|
 | **1. Data audit & quality** | `validate.py` — 20+ checks; `reports/data_audit.md` |
-| **2. Exploratory tools** | Streamlit app, filter by country, league, age, position |
-| **3. Valuation & projection** | Per-statistic league translations with uncertainty |
+| **2. Exploratory tools** | `cli project` / `cli counts`; Streamlit app still to come |
+| **3. Valuation & projection** | `translate.py` + `project.py` — per-statistic league translations with uncertainty, plus posting eligibility and bonus-pool status |
 
 ---
 
@@ -66,7 +66,19 @@ PYTHONPATH=src python -m kbo_mlb.cli audit
 # 4. How many players have both KBO and MLB records?
 PYTHONPATH=src python -m kbo_mlb.cli counts
 
-# ...or all four
+# 5. Pull MLB stats for the matched players (needs network, ~2 min)
+PYTHONPATH=src python -m kbo_mlb.cli mlb --start 2000 --end 2026
+
+# 6. Fit the translation and validate it out of sample
+PYTHONPATH=src python -m kbo_mlb.cli model --side batting \
+    --min-pt 150 --train-direction mlb_to_kbo
+
+# 7. Project current KBO players, with posting eligibility
+PYTHONPATH=src python -m kbo_mlb.cli project --side batting --season 2026 \
+    --min-pt 150 --train-direction mlb_to_kbo \
+    --players "Do Yeong Kim,Hyun Min Ahn"
+
+# steps 1-4 together
 PYTHONPATH=src python -m kbo_mlb.cli all
 ```
 
@@ -85,7 +97,13 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 |---|---|---|
 | Baseball-Reference **register** | KBO player-seasons, rosters, league totals | `/register/` is permitted by their robots.txt at a 3-second crawl delay |
 | Chadwick Bureau register | Player ID crosswalk (`key_bbref_minors` → MLBAM / FanGraphs) | Open data, CC-0 |
-| FanGraphs / Statcast via `pybaseball` | MLB player-seasons | Standard public API use |
+| **MLB Stats API** (`statsapi.mlb.com`) | MLB player-seasons and league totals | Official public endpoint, no key required. Keyed by MLBAM id, which the crosswalk already carries |
+| Baseball-Reference main site | MLB player-seasons, as an independent second source (`--source bref`) | `/players/` and `/leagues/` permitted by robots.txt at the same 3-second delay |
+
+FanGraphs via `pybaseball` is **not** used: that library reaches a legacy
+leaderboard endpoint which now answers HTTP 403. Having two independent MLB
+sources instead means the MLB side can be cross-checked the same way the KBO
+side is checked against published league totals.
 | KBO official site, Statiz | **Manual spot-checks only** | koreabaseball.com disallows automated crawling in robots.txt, so it is never scraped here |
 
 ### Crawling politely
@@ -203,6 +221,86 @@ scraped. The reconciliation check now distinguishes the two directions:
 scraping *more* than published is our bug and fails the run; scraping *less*
 is the source's coverage limit and is reported as a warning.
 
+## What the model found
+
+Fitted on league-crossing players, validated by removing everyone posted
+from the KBO and then predicting them.
+
+**Hitters translate. Pitchers essentially do not.**
+
+| | hitters (retention / R²) | pitchers (retention / R²) |
+|---|---|---|
+| Strikeout rate | **0.50** / 0.45 | 0.22 / 0.12 |
+| Walk rate | **0.66** / 0.31 | 0.25 / 0.09 |
+| Home run rate | 0.42 / 0.18 | 0.03 / 0.002 |
+| BABIP | 0.47 / 0.27 | — |
+| ERA | — | 0.03 / 0.006 |
+
+The retention slope is the share of a player's edge over his own league
+that survives the move. Out of sample, the hitter model beats a
+"predict league average" baseline on 5 of 8 statistics; the pitcher model
+beats it on 1 of 5, and is twice as bad as the baseline on ERA.
+
+This matches how baseball works — plate discipline is a stable individual
+skill, while a pitcher's run prevention is mediated by defence, park and
+luck — but it came out of the data rather than being assumed. It is also
+the opposite of what raw sample size suggested: there are 278 qualified
+two-league pitchers and only 149 hitters.
+
+### Direction matters more than anything else
+
+Three quarters of the available season pairs run **backwards in time**: a
+player moved MLB → KBO, so the KBO season is the later one. Fitting on
+those pooled with the forward moves means regressing an earlier MLB season
+on a later KBO one. Restricting to genuine KBO → MLB crossings leaves 33
+pairs for hitters, so this repo fits the reverse-direction pairs
+deliberately and states the assumption: that the talent mapping between
+the leagues is stable in both directions. Validating on the held-out
+posted players is what tests it.
+
+### Why the slope is never inverted algebraically
+
+It is tempting to fit KBO-from-MLB and flip the slope. That is wrong, and
+badly so. For a simple regression, slope(y~x) × slope(x~y) = R², so with
+a weak fit the two directions are wildly inconsistent:
+
+| stat | honest slope | naive 1/slope | error |
+|---|---|---|---|
+| K% | 0.224 | 3.59 | 16× |
+| HR% | 0.030 | 21.3 | 700× |
+| ERA | 0.028 | 20.2 | 720× |
+
+A model built by inversion would predict KBO pitchers as twenty times
+better than MLB average and look internally consistent throughout.
+`translate.inversion_diagnostic` computes this on real data so the repo
+demonstrates the point rather than asserting it.
+
+## Projections, and when a player can actually be signed
+
+`cli project` turns the fitted translation into a projection for a current
+KBO player, and pairs it with availability — because a stat line alone is
+half an answer. A KBO player needs roughly seven seasons before his club
+may post him, and the international bonus pool exempts a foreign
+professional only at 25 or older with six or more professional seasons.
+Below that he is pool-capped: a bonus slot rather than a market contract.
+
+That threshold is the highest-leverage fact in the tool. Kim Do-young
+(22, five KBO seasons) becomes postable in 2028 at age 24 — **pool-capped**.
+One year later he clears the exemption and reaches the open market. Same
+player, wholly different acquisition.
+
+Both rules are approximations flagged in the code as needing verification.
+The labour agreement expires 1 December 2026 with an international draft
+under negotiation, which would rewrite all of it.
+
+### Intervals are marked honest or useless
+
+A projection whose 10th–90th percentile band spans a factor of three is
+not a projection. Each row carries an `informative` flag, and most come
+back **False**: batting average, on-base and BABIP carry usable signal,
+while home run rate and isolated power do not. Saying so is more useful
+than printing a confident-looking number beside one that means nothing.
+
 ## Known limitations
 
 Stated up front, because they bound what the output is worth:
@@ -247,5 +345,10 @@ reports/           generated audit report
 
 ## Status
 
-Phase 1 (collection, crosswalk, audit) is implemented and tested. The
-translation model and the Streamlit app are next.
+Collection, crosswalk, audit, translation model, out-of-sample validation and
+forward projections are implemented and tested (107 tests, no network
+required). The Streamlit front end is the remaining piece.
+
+The honest summary of what the model can do: it projects a KBO **hitter's**
+batting average, on-base and BABIP with usable if wide ranges, says little
+about his power, and says nothing trustworthy about a KBO **pitcher** at all.
