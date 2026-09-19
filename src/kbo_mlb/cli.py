@@ -16,7 +16,8 @@ import sys
 import pandas as pd
 
 from . import (cohorts, config, crosswalk, evaluate, mlb_bref, mlb_data,
-               mlb_statsapi, rates, scrape_kbo, translate, validate)
+               mlb_statsapi, project, rates, scrape_kbo, translate, validate)
+from . import names
 from .http_client import CachedFetcher
 
 
@@ -318,6 +319,102 @@ def cmd_model(args) -> int:
     return 0
 
 
+def cmd_project(args) -> int:
+    """Project current KBO players into MLB terms, with availability."""
+    frames = _relative_frames(args)
+    side = args.side
+    kbo_rel, mlb_rel = frames[side]
+
+    pairs = translate.build_pairs(kbo_rel, mlb_rel)
+    groups = cohorts.classify(kbo_rel, mlb_rel)
+    pairs = cohorts.attach(pairs, groups)
+
+    direction = (None if args.train_direction == "both"
+                 else args.train_direction)
+    train = pairs[pairs["cohort"] != cohorts.POSTED]
+    if direction:
+        train = train[train["direction"] == direction]
+
+    model = translate.fit(train, side)
+    if not model.fits:
+        print("no fitted model; run `model` first to diagnose",
+              file=sys.stderr)
+        return 1
+    draws = {}
+    for stat in model.fits:
+        d = translate.bootstrap_coefficients(train, side, stat,
+                                             n_boot=args.boot)
+        if d is not None:
+            draws[stat] = d
+
+    mlb_league = rates.league_rates(
+        _load(f"mlb_league_totals{'' if args.source == 'statsapi' else '_bref'}.csv",
+              required=False), side)
+
+    wanted = [w.strip().lower() for w in args.players.split(",")] \
+        if args.players else None
+
+    # Service time accrues by being on a roster, not by playing time, so
+    # seasons are counted from the UNFILTERED table. Counting them after the
+    # min-playing-time filter silently erased Kim Do-young's injury-
+    # shortened 2025 and pushed his posting year a year late.
+    raw_seasons = (_load(f"kbo_{side}.csv")
+                   .dropna(subset=["player_register_id"])
+                   .groupby("player_register_id")["season"].nunique())
+
+    kbo_rel = kbo_rel.copy()
+    kbo_rel["_key"] = kbo_rel["player"].fillna("").map(names.loose_key)
+
+    current = kbo_rel[kbo_rel["season"] == args.season]
+    if wanted:
+        keys = {names.loose_key(w) for w in wanted}
+        targets = kbo_rel[kbo_rel["_key"].isin(keys)]
+    else:
+        pt = rates.PLAYING_TIME[side]
+        top = current.nlargest(args.top, pt)["player_register_id"]
+        targets = kbo_rel[kbo_rel["player_register_id"].isin(top)]
+
+    if targets.empty:
+        print("no matching players found", file=sys.stderr)
+        return 1
+
+    all_rows = []
+    for pid, g in targets.groupby("player_register_id"):
+        g = g.sort_values("season")
+        if args.season not in set(g["season"]):
+            continue
+        name = g["player"].iloc[-1]
+        proj = project.project_player(g, model, draws, mlb_league, translate)
+        if proj.empty:
+            continue
+        seasons_played = int(raw_seasons.get(pid, g["season"].nunique()))
+        age_now = float(pd.to_numeric(g["age"], errors="coerce").iloc[-1])
+        avail = project.availability(seasons_played, age_now, args.season)
+
+        print(f"\n{'=' * 66}\n{name}   age {age_now:.0f}   "
+              f"{seasons_played} KBO seasons\n{'=' * 66}")
+        print(f"  earliest posting: {avail['earliest_posting_season']} "
+              f"(age {avail['age_at_earliest_posting']}) - "
+              f"{avail['note']}")
+        if not avail["bonus_pool_exempt_if_posted_then"]:
+            print(f"  posting {avail['extra_years_for_pool_exemption']:.0f} "
+                  f"year(s) later would clear the bonus pool")
+        proj["informative"] = proj.apply(project.interval_is_informative, axis=1)
+        print(proj.to_string(index=False))
+
+        proj.insert(0, "player", name)
+        for k, v in avail.items():
+            proj[k] = v
+        all_rows.append(proj)
+
+    if all_rows:
+        out = pd.concat(all_rows, ignore_index=True)
+        path = config.PROCESSED_DIR / f"projections_{side}_{args.season}.csv"
+        out.to_csv(path, index=False)
+        print(f"\n  wrote {path}")
+    return 0
+
+
 def cmd_counts(args) -> int:
     """Sample size for the translation model - decides hitters vs pitchers."""
     cw = config.PROCESSED_DIR / "crosswalk.csv"
@@ -384,6 +481,13 @@ def main(argv: list[str] | None = None) -> int:
                              "from. mlb_to_kbo has the most pairs but runs "
                              "backwards in time, so it assumes the talent "
                              "mapping is symmetric.")
+    common.add_argument("--players", type=str, default=None,
+                        help="comma-separated player names to project")
+    common.add_argument("--season", type=int, default=2026,
+                        help="KBO season to project from")
+    common.add_argument("--top", type=int, default=5,
+                        help="if no names given, project the N players with "
+                             "the most playing time")
     common.add_argument("--min-pt", type=int, default=None,
                         help="minimum plate appearances / batters faced for "
                              "a season to enter the model. Rates built on "
@@ -409,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
         ("mlb", cmd_mlb, "pull MLB season stats (needs network)"),
         ("audit", cmd_audit, "run data quality checks"),
         ("model", cmd_model, "fit the translation and validate out of sample"),
+        ("project", cmd_project, "project current KBO players into MLB terms"),
         ("counts", cmd_counts, "report two-league sample sizes"),
         ("all", cmd_all, "run the whole pipeline"),
     ):
