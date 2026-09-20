@@ -25,6 +25,9 @@ player's age.
    know what we can trust before we use it.
 4. Translates each statistic separately and reports a **range**, not a single
    number, because the honest answer to "what will he hit?" is a range.
+5. Narrows the list to players who plausibly draw interest, by comparing them
+   with the Koreans who were actually posted rather than by inventing a
+   cutoff.
 
 **What it does not do.** It does not scout. It has nothing to say about a
 swing, a delivery, or makeup. It takes performance that already happened in
@@ -293,6 +296,57 @@ Both rules are approximations flagged in the code as needing verification.
 The labour agreement expires 1 December 2026 with an international draft
 under negotiation, which would rewrite all of it.
 
+### Who is actually a signing target
+
+Eligibility is not interest. Sixty hitters clear the posting and free-agency
+rules in 2026; historically about one player a year is posted. A list of
+sixty "targets" fails in the same way a home run projection with a 300x
+interval fails — technically derived, practically useless.
+
+Three filters narrow it, each reflecting how the market works rather than
+what the data happens to contain:
+
+**Korean players only.** Foreign imports in the KBO are already professionals
+from elsewhere and are not an international signing opportunity.
+
+**Before first domestic free agency.** A KBO player who reaches free agency
+and re-signs at home is typically 30 or older and locked up; moves to MLB
+essentially stop happening. Listing them is listing players nobody can buy.
+
+**Resembles the players who were actually posted.** For each player, his last
+two KBO seasons are reduced to one number relative to his own league — OPS
+for hitters, strikeout rate for pitchers — and compared with the same number
+for the Koreans who moved. Strikeout rate is the pitching measure because it
+is the only pitching statistic this project found to carry across leagues at
+all; screening pitchers on ERA would be screening on noise.
+
+The reference class is **nine hitters and seven pitchers**, so any cut is
+fitted to a handful of careers. Strictness is therefore a dial, and the
+screen reports what it costs in *both* directions every time — how many
+current players it admits, and how many of the historically posted players
+it would have caught:
+
+| side | strictness | bar | admits | catches |
+|---|---|---|---|---|
+| hitters | permissive | 1.136 | 7 of 60 | 9 of 9 |
+| hitters | **balanced** | **1.175** | **3 of 60** | 7 of 9 |
+| hitters | strict | 1.231 | 2 of 60 | 5 of 9 |
+| pitchers | permissive | 0.890 | 43 of 70 | 7 of 7 |
+| pitchers | **balanced** | **1.257** | **10 of 70** | 5 of 7 |
+| pitchers | strict | 1.507 | 2 of 70 | 4 of 7 |
+
+A setting that admits everyone is not a screen, and a setting that would have
+missed Lee Jung-hoo is not one either. The pitchers are the awkward side: Oh
+Seung-hwan and Lim Chang-yong were relievers posted at 30 and 31, and Lim's
+rates sit *below* league average, so a floor set by the weakest of them lets
+in most of the league.
+
+The benchmark is built from everyone who was posted, including the ones who
+failed — Jae-gyun Hwang reached 18 major league plate appearances and is in
+it. Classifying the cohort from playing-time-filtered MLB data quietly
+dropped him and raised the bar using only the players who succeeded, which is
+exactly the survivorship bias the benchmark exists to avoid.
+
 ### Intervals are marked honest or useless
 
 A projection whose 10th–90th percentile band spans a factor of three is
@@ -321,33 +375,65 @@ Stated up front, because they bound what the output is worth:
 5. **Statistics translate at different rates.** Strikeout and walk rates carry
    across far more reliably than batting average on balls in play. A single
    blanket "KBO discount" is the wrong model and this repo does not use one.
+6. **The interest screen is fitted to sixteen careers.** Nine hitters and
+   seven pitchers is not a distribution, it is a handful of anecdotes with a
+   quantile function applied. It is better than an invented threshold because
+   it is auditable, not because it is well estimated.
+7. **Credited seasons are estimated.** A KBO service season requires 145+ days
+   registered on the first team, with short years carrying over and combining.
+   Those day counts are not published anywhere this pipeline reads, so seasons
+   here are calendar seasons in which a player appeared. Every eligibility
+   date is an estimate, not a schedule.
 
 ---
 
 ## Layout
 
 ```
+app.py             Streamlit front end — layout only, no logic
 src/kbo_mlb/
   config.py        paths, source URLs, crawl limits — all tunables live here
   http_client.py   rate-limited, disk-cached fetcher
   parse_bref.py    register-page parsers (handles comment-wrapped tables)
   names.py         Hangul romanisation, surname classes, matching keys
   scrape_kbo.py    season → team → player crawl
-  mlb_data.py      Chadwick register + pybaseball pulls
+  mlb_data.py      Chadwick register lookup
+  mlb_statsapi.py  MLB Stats API client (FanGraphs blocks automated pulls)
   crosswalk.py     tiered player matching + review queue
   validate.py      data quality checks and the audit report
+  rates.py         league-relative rates, from published totals
+  cohorts.py       classifies players by route, not nationality
+  translate.py     the fit, the bootstrap, the inversion diagnostic
+  evaluate.py      hold out everyone who was posted, then predict them
+  project.py       forward projections + KBO/MLB eligibility rules
+  scouting.py      the interest screen, benchmarked on players posted
+  app_data.py      everything the app needs, with no Streamlit in it
   cli.py           command-line entry point
-tests/             55 tests, no network required
+tests/             179 tests, no network required
 reports/           generated audit report
 ```
+
+`app.py` holds no logic on purpose: Streamlit cannot be imported in a test
+runner, so anything living in it is untestable. What it *does* get is
+`tests/test_app_smoke.py`, which executes the whole file against a stubbed
+Streamlit and the real data. That is not a substitute for looking at the page,
+but it is what caught every pitcher's page raising `AttributeError` on open.
 
 ---
 
 ## Status
 
-Collection, crosswalk, audit, translation model, out-of-sample validation and
-forward projections are implemented and tested (107 tests, no network
-required). The Streamlit front end is the remaining piece.
+Complete end to end: collection, crosswalk, audit, translation model,
+out-of-sample validation, forward projections, the eligibility rules, the
+interest screen and the Streamlit front end. 179 tests, no network required.
+
+The headline finding is not the one this project set out to confirm. Hitters
+translate and pitchers essentially do not: strikeout rate retains 0.50 of a
+hitter's edge over his league (R² 0.45) and walk rate 0.66 (R² 0.31), while a
+pitcher's ERA retains 0.03 (R² 0.006) — worse, out of sample, than assuming
+league average. The pitcher sample is the larger of the two (278 qualified
+seasons against 149), which is why the app carries a warning on that tab
+rather than a projection anyone should act on.
 
 The honest summary of what the model can do: it projects a KBO **hitter's**
 batting average, on-base and BABIP with usable if wide ranges, says little
