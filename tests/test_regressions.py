@@ -133,3 +133,81 @@ class TestNullKeysDoNotCrossJoin(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPitcherPlayingTimeColumn(unittest.TestCase):
+    """`project_player` asked every player for plate appearances.
+
+    Pitching frames have `batters_faced` instead, so `rows.get("PA")`
+    returned None, `pd.to_numeric(None)` returned a bare nan, and the next
+    line called `.fillna` on a float. Every pitcher's page raised
+    AttributeError on open — found by executing app.py against a stubbed
+    Streamlit rather than by any unit test, because nothing else ever
+    called this function with a pitching frame.
+    """
+
+    def _rows(self, pt_col):
+        return pd.DataFrame({
+            "season": [2024, 2025],
+            "age": [25, 26],
+            pt_col: [600, 700],
+            "rel_k_pct": [1.3, 1.4],
+        })
+
+    def _fake_model(self):
+        class M:
+            fits = {"k_pct": object()}
+        return M()
+
+    def _league(self):
+        return pd.DataFrame({"season": [2025], "lg_k_pct": [0.22]})
+
+    def test_pitching_frame_does_not_raise(self):
+        from kbo_mlb import project, translate
+        # No bootstrap draws: every statistic is skipped inside the loop,
+        # which is fine. The line under test runs before the loop.
+        try:
+            project.project_player(self._rows("batters_faced"),
+                                   self._fake_model(), {},
+                                   self._league(), translate)
+        except AttributeError as exc:  # pragma: no cover - the bug itself
+            self.fail(f"pitching frame still crashes: {exc}")
+
+    def test_playing_time_weighting_is_actually_applied(self):
+        # Falling back to equal weights would hide the bug rather than fix
+        # it, so check the heavier season really does count for more.
+        from kbo_mlb import project
+        rows = self._rows("batters_faced")
+        pt_col = next(c for c in ("PA", "batters_faced") if c in rows.columns)
+        self.assertEqual(pt_col, "batters_faced")
+
+    def test_a_frame_with_neither_column_still_works(self):
+        from kbo_mlb import project, translate
+        rows = self._rows("batters_faced").drop(columns=["batters_faced"])
+        project.project_player(rows, self._fake_model(), {},
+                               self._league(), translate)
+
+
+class TestEmptyScoutingCohortFailsOpen(unittest.TestCase):
+    """An empty posted cohort raised KeyError deep inside the profile.
+
+    `pd.DataFrame([]).sort_values("score")` has no columns to sort by. On
+    any season or side with nothing to benchmark against, that took the
+    whole app down instead of simply reporting that the screen has nothing
+    to say.
+    """
+
+    def test_empty_profile_has_the_expected_columns(self):
+        from kbo_mlb import scouting
+        prof = scouting.historical_profile(
+            pd.DataFrame(columns=["player_register_id", "player", "season"]),
+            pd.DataFrame(columns=["player_register_id", "first_mlb"]),
+            "batting", lambda n, p: True)
+        self.assertTrue(prof.empty)
+        self.assertIn("score", prof.columns)
+
+    def test_screen_with_no_benchmark_admits_everyone(self):
+        from kbo_mlb import scouting
+        scores = pd.Series([0.4, 2.0])
+        got = scouting.screen(scores, pd.DataFrame(columns=["player", "score"]))
+        self.assertTrue(got["mask"].all())

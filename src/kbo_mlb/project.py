@@ -192,7 +192,14 @@ def project_player(
     if rows.empty:
         return pd.DataFrame()
 
-    pt = pd.to_numeric(rows.get("PA"), errors="coerce").fillna(0.0)
+    # Pitchers do not have plate appearances. Asking for "PA" on a pitching
+    # frame returns None, and pd.to_numeric(None) is a bare nan, so this
+    # line used to raise AttributeError before the weighting ever ran -
+    # every pitcher's page crashed on open.
+    pt_col = next((c for c in ("PA", "batters_faced") if c in rows.columns),
+                  None)
+    pt = (pd.to_numeric(rows[pt_col], errors="coerce").fillna(0.0)
+          if pt_col else pd.Series(0.0, index=rows.index))
     if pt.sum() <= 0:
         pt = pd.Series(1.0, index=rows.index)
     age = float(pd.to_numeric(rows["age"], errors="coerce").iloc[-1])

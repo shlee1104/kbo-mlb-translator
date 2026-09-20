@@ -38,10 +38,12 @@ st.set_page_config(page_title="KBO → MLB Translator",
 
 @st.cache_data(show_spinner="Loading data and fitting the translation…")
 def get_bundle(side: str, season: int, min_pt: int, korean_only: bool,
-               pre_fa_only: bool, fa_seasons: int):
+               pre_fa_only: bool, fa_seasons: int, strictness: str,
+               interest_only: bool):
     return app_data.load(side=side, season=season, min_playing_time=min_pt,
                          korean_only=korean_only, pre_fa_only=pre_fa_only,
-                         fa_seasons=fa_seasons)
+                         fa_seasons=fa_seasons, strictness=strictness,
+                         interest_only=interest_only)
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +88,22 @@ fa_seasons = st.sidebar.slider(
          "(the common case for KBO stars) is the default and this is a "
          "slider rather than a constant.")
 
+interest_only = st.sidebar.checkbox(
+    "Only players who look like past MLB signings", value=True,
+    help="Eligibility is not interest. This compares each player's last two "
+         "KBO seasons with what the Korean players who were ACTUALLY posted "
+         "looked like before they moved, and keeps the ones who measure up.")
+strictness = st.sidebar.select_slider(
+    "How closely he has to resemble them", list(app_data.scouting.STRICTNESS),
+    value="balanced", disabled=not interest_only,
+    help="Permissive uses the weakest player ever posted as the bar. Strict "
+         "uses the median. The reference class is tiny, so this is a dial "
+         "rather than a number.")
+
 try:
     bundle = get_bundle(side, int(season), int(min_pt), korean_only,
-                        pre_fa_only, int(fa_seasons))
+                        pre_fa_only, int(fa_seasons), strictness,
+                        interest_only)
 except FileNotFoundError as exc:
     st.error(str(exc))
     st.stop()
@@ -105,6 +120,29 @@ removed = len(everyone) - len(roster)
 st.sidebar.caption(
     f"**{len(roster)}** signing targets in {season}"
     + (f"  \n({removed} of {len(everyone)} filtered out)" if removed else ""))
+
+# The screen has to be judged on the players it was asked about, not on
+# the whole league: foreign imports and veterans past free agency were
+# already excluded on other grounds.
+eligible = everyone
+if korean_only:
+    eligible = eligible[eligible["korean"]]
+if pre_fa_only:
+    eligible = eligible[~eligible["past_first_fa"]]
+screen = bundle.screen_result(eligible["score"])
+
+if interest_only and pd.notna(screen["threshold"]):
+    metric = app_data.scouting.SCORE_NAME[side]
+    st.sidebar.caption(
+        f"**The bar: {screen['threshold']:.3f}** {metric}, vs their league. "
+        f"Clears it: **{screen['admitted']} of {len(eligible)}** eligible "
+        f"players.")
+    caught, total = screen["historical_caught"], screen["historical_total"]
+    note = (f"Applied to history, this bar catches **{caught} of {total}** "
+            f"Koreans who were actually posted.")
+    if screen["missed"]:
+        note += "  \nIt would have missed: " + ", ".join(screen["missed"]) + "."
+    st.sidebar.caption(note)
 
 tab_player, tab_browse, tab_trust = st.tabs(
     ["Player", "Browse everyone", "How to read this"])
@@ -128,6 +166,20 @@ with tab_player:
 
     st.header(info["name"])
     avail = info["availability"]
+
+    me = roster[roster["player_register_id"] == labels[choice]]
+    if not me.empty and pd.notna(me.iloc[0].get("score")):
+        mine = float(me.iloc[0]["score"])
+        metric = app_data.scouting.SCORE_NAME[side]
+        if pd.notna(screen["threshold"]):
+            gap = mine - screen["threshold"]
+            st.caption(
+                f"**Scout screen: {mine:.3f}** {metric} over his last two "
+                f"seasons, against a bar of {screen['threshold']:.3f} set by "
+                f"the Koreans who were actually posted "
+                f"({'+' if gap >= 0 else ''}{gap:.3f}).")
+        else:
+            st.caption(f"**Scout screen: {mine:.3f}** {metric}.")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Age", f"{info['age']:.0f}")
@@ -239,8 +291,9 @@ with tab_browse:
     st.caption(
         "Korean players who have not yet reached domestic free agency. "
         "*Postable* is the first season his club could post him; *FA* is "
-        "when he can re-sign at home instead. Open a name on the Player "
-        "tab for the full projection.")
+        "when he can re-sign at home instead. *Screen* is how he compares "
+        "with the Koreans who were actually posted. Open a name on the "
+        "Player tab for the full projection.")
 
     f1, f2 = st.columns(2)
     ages = roster["age"].dropna()
@@ -261,11 +314,13 @@ with tab_browse:
         "Club queue": view["posting_likely_delayed"].map(
             lambda b: "⚠ may slip" if b else ""),
         "Nationality from": view["nationality_source"],
+        "Screen": view["score"].map(
+            lambda v: f"{v:.3f}" if pd.notna(v) else "—"),
     })
 
-    cols = [c for c in ("player", "team_name", "age", "seasons", "Postable",
-                        "Free", "FA", "Club queue", "Nationality from",
-                        "PA", "batters_faced")
+    cols = [c for c in ("player", "team_name", "age", "seasons", "Screen",
+                        "Postable", "Free", "FA", "Club queue",
+                        "Nationality from", "PA", "batters_faced")
             if c in view.columns]
     st.dataframe(view[cols], width='stretch', hide_index=True)
     st.caption(f"{len(view)} players")
@@ -319,6 +374,23 @@ time in both leagues. Wide ranges are the honest answer, not a bug.
 **The players who move are not a random sample.** Only KBO stars get posted,
 and mostly MLB castoffs go the other way. That selection biases any
 translation, and including both directions helps but does not remove it.
+
+### How the shortlist is narrowed
+
+Sixty players clear the posting and free-agency rules. About one a year is
+actually posted, so eligibility on its own is not a shortlist. Rather than
+invent a cutoff, this compares each player's last two KBO seasons with what
+the Korean players who **were** posted looked like before they moved:
+relative OPS for hitters, relative strikeout rate for pitchers. Strikeout
+rate is the pitching measure because it is the only pitching statistic this
+project found to carry across leagues at all.
+
+**The reference class is nine hitters and seven pitchers.** Any cut is
+fitted to a handful of careers, which is why strictness is a dial and why
+the sidebar always reports what the current setting would have missed. The
+pitchers are especially awkward: Oh Seung-hwan and Lim Chang-yong were
+relievers posted at 30 and 31, and Lim's rates sit below league average, so
+a floor set by the weakest of them admits most of the league.
 
 ### The signing rules used here
 

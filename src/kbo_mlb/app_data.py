@@ -16,7 +16,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from . import cohorts, config, names, project, rates, translate
+from . import (cohorts, config, names, project, rates, scouting,
+               translate)
 
 # Statistics a scout actually asks about, in the order they'd ask.
 DISPLAY_ORDER = ["avg", "obp", "slg", "iso", "hr_pct", "k_pct", "bb_pct",
@@ -86,11 +87,19 @@ class Bundle:
     korean_only: bool = True
     pre_fa_only: bool = True
     fa_seasons: int = project.KBO_DOMESTIC_FA_SEASONS
+    profile: pd.DataFrame = None     # players actually posted, pre-move form
+    strictness: str = "balanced"
+    interest_only: bool = True
 
     @property
     def seasons_by_player(self) -> pd.Series:
         return (self.kbo_raw.dropna(subset=["player_register_id"])
                 .groupby("player_register_id")["season"].nunique())
+
+    def screen_result(self, scores: pd.Series) -> dict:
+        """Apply the historical-interest bar and report both error rates."""
+        prof = (self.profile if self.profile is not None else pd.DataFrame())
+        return scouting.screen(scores, prof, self.strictness)
 
     def roster(self, apply_filters: bool = True) -> pd.DataFrame:
         """One row per player active in `season`, for the picker.
@@ -137,6 +146,15 @@ class Bundle:
             if self.pre_fa_only:
                 out = out[~out["past_first_fa"]]
 
+        # How does each player compare with those who were actually posted?
+        out["score"] = [scouting.score(scouting.recent(self.kbo, pid),
+                                       self.side)
+                        for pid in out["player_register_id"]]
+        result = self.screen_result(out["score"])
+        out["clears_screen"] = result["mask"].reindex(out.index).fillna(False)
+        if apply_filters and self.interest_only:
+            out = out[out["clears_screen"]]
+
         # Congestion is computed AFTER filtering, on purpose. Only players
         # who could actually be posted compete for a club's willingness to
         # let someone go; a foreign import or a veteran already past free
@@ -167,6 +185,8 @@ def load(
     korean_only: bool = True,
     pre_fa_only: bool = True,
     fa_seasons: int = project.KBO_DOMESTIC_FA_SEASONS,
+    strictness: str = "balanced",
+    interest_only: bool = True,
 ) -> Bundle:
     """Load the data, fit the translation, and prepare bootstrap draws.
 
@@ -208,8 +228,20 @@ def load(
         mlb, rates.league_rates(mlb_totals, side), side,
         min_playing_time=min_playing_time)
 
+    groups = cohorts.classify(kbo_rel, mlb_rel)
     pairs = translate.build_pairs(kbo_rel, mlb_rel)
-    pairs = cohorts.attach(pairs, cohorts.classify(kbo_rel, mlb_rel))
+    pairs = cohorts.attach(pairs, groups)
+
+    # A separate, permissive classification for the scouting benchmark.
+    # Whether a player was POSTED is a fact about his move, not about how
+    # much he ended up playing once he arrived. Classifying from the
+    # playing-time-filtered MLB frame quietly dropped Jae-gyun Hwang (18
+    # MLB plate appearances) and others from the cohort, which raised the
+    # bar using only the players who succeeded - exactly the survivorship
+    # bias this benchmark exists to avoid.
+    mlb_any = rates.add_relative_rates(
+        mlb, rates.league_rates(mlb_totals, side), side, min_playing_time=1)
+    groups_any = cohorts.classify(kbo_rel, mlb_any)
 
     train = pairs[pairs["cohort"] != cohorts.POSTED]
     if train_direction:
@@ -234,12 +266,23 @@ def load(
                         .drop_duplicates("player_register_id", keep="last")
                         .set_index("player_register_id")["birth_city"])
 
+    # The benchmark: what Korean players who actually moved looked like in
+    # Korea beforehand. Imports who reached MLB after a KBO stint are not
+    # posted Korean stars and would drag the bar down.
+    def _is_korean(name, pid):
+        return infer_korean(name, birth_cities.get(pid, ""))[0]
+
+    profile = scouting.historical_profile(
+        kbo_rel, groups_any[groups_any["cohort"] == cohorts.POSTED],
+        side, _is_korean)
+
     return Bundle(side=side, season=season, kbo=kbo_rel, kbo_raw=kbo_raw,
                   mlb_league=rates.league_rates(mlb_totals, side),
                   model=model, draws=draws, train_pairs=train,
                   validation=validation, birth_cities=birth_cities,
                   korean_only=korean_only, pre_fa_only=pre_fa_only,
-                  fa_seasons=fa_seasons)
+                  fa_seasons=fa_seasons, profile=profile,
+                  strictness=strictness, interest_only=interest_only)
 
 
 def find_player(bundle: Bundle, query: str) -> pd.DataFrame:
